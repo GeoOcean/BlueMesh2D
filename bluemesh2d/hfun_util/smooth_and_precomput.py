@@ -29,7 +29,7 @@ def carry_bounds(source):
     return decorator
 
 
-def smooth_precomput(hfun, domain=None, max_gradient=0.1, cell_size=None, plot=False):
+def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, plot=False):
     """Gradient-limited, pre-computed mesh sizing function.
 
     Returns a **continuous** callable ``hfuns(xy)`` that behaves like ``hfun``
