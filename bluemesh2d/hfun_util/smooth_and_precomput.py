@@ -1,4 +1,5 @@
 from scipy.interpolate import RegularGridInterpolator
+from scipy.ndimage import gaussian_filter
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -160,12 +161,16 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
         plt.show()
 
     # -----------------------cache result in a fast interpolator
-    # pchip (shape-preserving, C1) reconstruction: removes the gradient kinks a
-    # linear interpolant leaves at grid lines (the "raster cell" imprint) without
-    # the ringing/overshoot a plain cubic spline produces, so the size field
-    # varies smoothly even where the grid is coarser than the elements.
+    # Smooth the gridded field once with a light Gaussian blur, then look it up
+    # with plain *linear* interpolation. pchip reconstruction removes the same
+    # grid-line kinks (the "raster cell" imprint) but costs ~1000x more per query
+    # -- and this field is queried millions of times by refine/smooth. Blurring
+    # the grid a single time and evaluating linearly gives the smooth transitions
+    # at linear speed. A normalised blur cannot exceed the max gradient already
+    # enforced above (grad(H*k) = grad(H)*k), so the Lipschitz cap is preserved.
+    H = gaussian_filter(H, sigma=1.0, mode="nearest")
     interp = RegularGridInterpolator(
-        (ys, xs), H, method="pchip", bounds_error=False, fill_value=None
+        (ys, xs), H, method="linear", bounds_error=False, fill_value=None
     )
     h_lo, h_hi = float(H.min()), float(H.max())
 
@@ -176,8 +181,8 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
             xy = xy.reshape(1, -1)
         # RegularGridInterpolator expects (row=y, col=x) ordering
         h = interp(np.column_stack([xy[:, 1], xy[:, 0]]))
-        # clip cubic overshoot back into the field's own range (never below the
-        # smallest requested size, so no explosive sub-hmin elements)
+        # keep values inside the field's own range (never below the smallest
+        # requested size, so no explosive sub-hmin elements)
         np.clip(h, h_lo, h_hi, out=h)
         return h[0] if one else h
 
