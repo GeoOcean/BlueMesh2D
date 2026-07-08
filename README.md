@@ -2,6 +2,8 @@
   <img src="assets/mesh_geocean.webp" alt="BlueMesh2D logo" width="120">
 </p>
 
+> **BlueMesh2D** is the successor of **PyMesh2D**. The repository has been recreated under its new name as part of the BlueMath ecosystem. While the repository history has changed, the codebase and its development continue from the original project.
+
 ## `BlueMesh2D: Delaunay-based mesh generation in Python`
 
 `BlueMesh2D` is a `Python`-based unstructured mesh-generator for two-dimensional polygonal geometries, providing a range of relatively simple, yet effective two-dimensional meshing algorithms. `BlueMesh2D` includes variations on the "classical" Delaunay refinement technique, a new "Frontal"-Delaunay refinement scheme, a non-linear mesh optimisation method, and auxiliary mesh and geometry pre- and post-processing facilities. 
@@ -63,6 +65,15 @@ pip install -e .
     python -m bluemesh2d.tridemo 10; % medium-scale problem, mesh refinement + optimisation. 
 
 More examples available in [`BlueMath`](https://github.com/GeoOcean/BlueMath/tree/main/toolkit/mesh).
+
+### Contact
+
+For questions, bug reports, or feature requests, please open an issue on GitHub.
+
+For direct contact:
+
+**Etienne**  
+faugeree@unican.es
 
 ### `References`
 
