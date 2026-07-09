@@ -147,34 +147,32 @@ def getiso_polygon(x, y, z, zmax=None, grid_res=None) -> Polygon:
     fig, ax = plt.subplots()
     cs = ax.contourf(X, Y, new_mask, levels=[0, 1])
 
+    # Collect the filled-contour paths across matplotlib versions:
+    #   < 3.9 : one PathCollection per level (cs.collections, removed in 3.10)
+    #  >= 3.9 : cs.get_paths() returns one compound path per level
     try:
-        # ------------------------------------ Matplotlib <3.9
-        collections = cs.collections
+        paths = [p for c in cs.collections for p in c.get_paths()]
     except AttributeError:
-        # ------------------------------------ Matplotlib >=3.9
-        class DummyCollection:
-            def __init__(self, segs):
-                self.paths = [type("PathLike", (), {"vertices": seg})() for seg in segs]
-
-            def get_paths(self):
-                return self.paths
-
-        collections = [DummyCollection(segs) for segs in cs.allsegs if segs]
+        paths = list(cs.get_paths())
 
     plt.close(fig)
 
     polygons = []
 
-    # -----------------------extract closed paths as polygons
-    for collection in collections:
-        for path in collection.get_paths():
-            pts = path.vertices
+    # -----------------------extract closed rings as polygons
+    # Filled-contour paths are *compound*: one path holds the outer boundary
+    # plus all its holes as separate closed sub-rings. to_polygons() splits a
+    # path into those sub-rings (identically in every matplotlib version);
+    # treating path.vertices as a single ring would concatenate the rings into
+    # a self-intersecting (invalid) polygon and silently drop the region.
+    for path in paths:
+        for pts in path.to_polygons():
+            pts = np.asarray(pts)
             if pts.shape[0] < 4:
                 continue
-            if np.allclose(pts[0], pts[-1]):
-                poly = Polygon(pts)
-                if poly.is_valid and not poly.is_empty and poly.area > 0:
-                    polygons.append(poly)
+            poly = Polygon(pts)
+            if poly.is_valid and not poly.is_empty and poly.area > 0:
+                polygons.append(poly)
 
     # -----------------------no valid polygons
     if not polygons:

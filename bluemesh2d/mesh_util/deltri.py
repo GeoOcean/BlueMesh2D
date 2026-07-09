@@ -4,7 +4,16 @@ from ..mesh_cost.triarea import triarea
 from ..poly_test.inpoly import inpoly
 from .cfmtri import cfmtri
 
-import triangle as tr
+# The optional `triangle` package (Shewchuk's Triangle) provides true
+# *constrained* Delaunay triangulation. When it is not installed we fall back
+# to the pure-scipy *conforming* Delaunay in `cfmtri` (boundary edges are
+# recovered by bisection instead of being constrained directly).
+try:
+    import triangle as tr
+except ImportError:
+    tr = None
+
+_warned_fallback = False
 
 
 def deltri(vert=None, conn=None, node=None, PSLG=None, part=None, kind="constrained"):
@@ -85,6 +94,16 @@ def deltri(vert=None, conn=None, node=None, PSLG=None, part=None, kind="constrai
     # Match MATLAB's deltri2 behavior exactly:
     # - 'constrained': use delaunayTriangulation (triangle library in Python)
     # - 'conforming': use cfmtri (bisection algorithm)
+    if kind == "constrained" and tr is None:
+        # `triangle` not installed -> conforming Delaunay (scipy) fallback.
+        global _warned_fallback
+        if not _warned_fallback:
+            print("deltri: 'triangle' package not installed; falling back to "
+                  "conforming Delaunay (scipy). Install 'triangle' for faster, "
+                  "truly constrained triangulation.")
+            _warned_fallback = True
+        kind = "conforming"
+
     if kind == "constrained":
         tri_input = {
             'vertices': vert,
