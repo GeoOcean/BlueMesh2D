@@ -2,49 +2,33 @@ import numpy as np
 
 
 def tricon(tt, cc=None):
-    """
-    TRICON : compute edge-centered connectivity for a conforming 2-simplex
-    (triangular) mesh in the 2D plane.
-
-    [ee, tt] = tricon(tt, cc) returns the edge-based adjacency for a
-    triangulated mesh. The output `ee` contains the set of unique edges,
-    and `tt` contains triangle-to-edge connectivity information.
+    """Build edge-centered connectivity for a conforming triangular mesh.
 
     Parameters
     ----------
-    tt : ndarray (T, 3)
-        Array of vertex indices defining each triangle.
-    cc : ndarray (C, 2)
-        Array of constrained edges (optional). Each row defines a boundary edge.
+    tt : ndarray of shape (T, 3)
+        Triangle vertex indices.
+    cc : ndarray of shape (C, 2), optional
+        Constraining edges as vertex-index pairs.
 
     Returns
     -------
-    ee : ndarray (E, 5)
-        Edge connectivity array [V1, V2, T1, T2, CE], where:
-            - V1, V2 : vertex indices forming the edge
-            - T1, T2 : indices of adjacent triangles (T2 = 0 for boundary edges)
-            - CE : index of the matching constraint in `cc`, or 0 if none
-    tt : ndarray (T, 6)
-        Triangle-to-edge mapping [V1, V2, V3, E1, E2, E3], where E1–E3 are
-        the indices of the edges forming each triangle.
-
-    Notes
-    -----
-    This routine builds explicit edge-triangle connectivity for conforming
-    triangulations, identifying adjacency relationships and constrained edges.
-    It is a key step in mesh refinement and optimization algorithms.
+    ee : ndarray of shape (E, 5)
+        Unique edges with columns ``[v1, v2, tri1, tri2, constraint]``.
+        ``tri2`` is ``-1`` on boundary edges; ``constraint`` is ``1`` when the
+        edge matches an entry in ``cc``, else ``0``.
+    tt : ndarray of shape (T, 6)
+        Triangle-to-edge map with columns ``[v1, v2, v3, e1, e2, e3]``.
 
     References
     ----------
-    Translation of the MESH2D function `TRICON2`.
+    Translation of the MESH2D function ``TRICON2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- extract args
     if cc is None:
         cc = np.empty((0, 2), dtype=int)
 
-    # ---------------------------------------------- basic checks
     if not isinstance(tt, np.ndarray) or tt.ndim != 2 or tt.shape[1] != 3:
         raise ValueError("tricon:incorrectDimensions - tt must be (n,3) int array")
 
@@ -59,13 +43,11 @@ def tricon(tt, cc=None):
     nt = tt.shape[0]
     _nc = cc.shape[0]
 
-    # ------------------------------ assemble non-unique edge set
     ee = np.zeros((nt * 3, 2), dtype=int)
     ee[0 * nt : 1 * nt, :] = tt[:, [0, 1]]
     ee[1 * nt : 2 * nt, :] = tt[:, [1, 2]]
     ee[2 * nt : 3 * nt, :] = tt[:, [2, 0]]
 
-    # ------------------------------ unique edges and re-indexing
     # [ee, iv, jv] = ...
     #     unique(sort(ee, 2), 'rows');
 
@@ -78,14 +60,14 @@ def tricon(tt, cc=None):
     _, iv, jv = np.unique(ed, return_index=True, return_inverse=True)
     ee_unique = ee_sorted[iv, :]
 
-    # ------------------- tria-to-edge indexing: 3 edges per tria
+    # Tria-to-edge indexing: 3 edges per tria
     tt_full = np.zeros((nt, 6), dtype=int)
     tt_full[:, :3] = tt
     tt_full[:, 3] = jv[0 * nt : 1 * nt]
     tt_full[:, 4] = jv[1 * nt : 2 * nt]
     tt_full[:, 5] = jv[2 * nt : 3 * nt]
 
-    # ------------------- edge-to-tria indexing: 2 trias per edge
+    # Edge-to-tria indexing: 2 trias per edge
     ne = ee_unique.shape[0]
     ee_full = np.zeros((ne, 5), dtype=int)
     ee_full[:, :2] = ee_unique
@@ -99,12 +81,10 @@ def tricon(tt, cc=None):
 
     ee_full[ee_full[:, 3] == 0, 3] = -1
 
-    # ------------------------------------ find constrained edges
     if cc.size > 0:
         cc_sorted = np.sort(cc, axis=1)
         cd = cc_sorted[:, 0] * (2**31) + cc_sorted[:, 1]
         constraint_flag = np.isin(ed[iv], cd).astype(int)
-        # ----------------------------------- mark constrained edges
         ee_full[:, 4] = constraint_flag
 
     return ee_full, tt_full

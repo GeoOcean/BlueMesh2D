@@ -8,53 +8,32 @@ from .mesh_cost.triscr import triscr
 
 
 def tricost(vert=None, conn=None, tria=None, tnum=None, hvrt=None):
-    """
-    Plot quality metrics for a 2-simplex triangulation embedded in the
-    two-dimensional plane.
-
-    This function is a translation of the MATLAB function `TRICOST` from
-    the MESH2D package developed by Darren Engwirda.
+    """Plot quality-metric histograms for a 2D triangle mesh.
 
     Parameters
     ----------
     vert : ndarray of shape (V, 2)
-        XY coordinates of the vertices in the triangulation.
+        Vertex coordinates.
     conn : ndarray of shape (E, 2)
         Constrained edges.
     tria : ndarray of shape (T, 3)
-        Triangles defined by vertex indices.
-    tnum : ndarray of shape (T, 1)
-        Part or region indices; `tnum[i]` is the index of the part in
-        which the *i*-th triangle resides.
-    hvrt : ndarray of shape (V, 1), optional
-        Local spacing information, typically derived from the mesh-size
-        function evaluated at vertex positions.
+        Triangle connectivity.
+    tnum : ndarray of shape (T, 1), optional
+        Part index per triangle.
+    hvrt : ndarray of shape (V,), optional
+        Vertex mesh-size values; when provided, also plots relative edge lengths.
 
     Notes
     -----
-    - Plots histograms of quality metrics for triangular elements.
-    - If `hvrt` is provided, also plots histograms of relative edge length,
-      indicating how well the mesh conforms to spacing constraints.
-    - Each row of `tria` and `conn` defines an element:
-      `vert[tria[i, 0]]`, `vert[tria[i, 1]]`, and `vert[tria[i, 2]]`
-      give the coordinates of the *i*-th triangle.
-    - The edges in `conn` are defined in a similar way.
+    Displays histograms of element quality scores, angles, relative sizes
+    (when ``hvrt`` is given), and node degree.
 
     References
     ----------
-    Engwirda, D. (2017–2018).
-    *MESH2D: Simple quality Delaunay mesh generator for MATLAB/OCTAVE.*
-    GitHub repository: https://github.com/dengwirda/mesh2d
-    Email: d.engwirda@gmail.com
-    Last updated (original MATLAB version): 09/07/2018
-
-    See Also
-    --------
-    refine : Delaunay mesh refinement.
-    smooth : Mesh smoothing via hill-climbing optimization.
+    Translation of the MESH2D function ``TRICOST``.
+    Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # --------------------------------------------- basic checks
     if not all(
         isinstance(x, (np.ndarray, type(None))) for x in [vert, conn, tria, tnum, hvrt]
     ):
@@ -78,7 +57,6 @@ def tricost(vert=None, conn=None, tria=None, tnum=None, hvrt=None):
     if np.min(tria[:, :3]) < 0 or np.max(tria[:, :3]) > nvrt:
         raise ValueError("tricost:invalidInputs - Invalid TRIA input array.")
 
-    # --------------------------------------------- subplot positions
     axpos31 = [0.125, 0.750, 0.800, 0.150]
     axpos32 = [0.125, 0.450, 0.800, 0.150]
     axpos33 = [0.125, 0.150, 0.800, 0.150]
@@ -88,7 +66,6 @@ def tricost(vert=None, conn=None, tria=None, tnum=None, hvrt=None):
     axpos43 = [0.125, 0.345, 0.800, 0.135]
     axpos44 = [0.125, 0.100, 0.800, 0.135]
 
-    # --------------------------------------------- create figure
     fig = plt.figure(figsize=(6, 6))
     fig.patch.set_facecolor("w")
 
@@ -124,24 +101,22 @@ def tricost(vert=None, conn=None, tria=None, tnum=None, hvrt=None):
 
 
 def mad(ff):
-    """
-    Compute the mean absolute deviation (MAD) from the mean.
+    """Compute the mean absolute deviation from the mean.
 
     Parameters
     ----------
     ff : array_like
-        Array of numerical values.
+        Input values.
 
     Returns
     -------
     mf : float
-        Mean absolute deviation from the mean.
+        Mean absolute deviation.
 
     References
     ----------
-    Translation of the MESH2D function `MAD` by Darren Engwirda.
-    Original MATLAB source:
-    https://github.com/dengwirda/mesh2d
+    Translation of the MESH2D function ``MAD``.
+    Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
     ff = np.asarray(ff, dtype=float)
@@ -150,19 +125,20 @@ def mad(ff):
 
 
 def deghist(dd, ty, ax=None):
-    """
-    Plot a histogram for the mesh quality metric "degree".
+    """Plot a histogram of node degree.
 
     Parameters
     ----------
     dd : array_like
-        Array of node degrees (integer values).
+        Node degrees.
     ty : str
-        Type of triangulation ('tria3' or 'tria4').
+        Mesh type label (``'tria3'`` or ``'tria4'``).
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; defaults to the current axes.
 
     References
     ----------
-    Translation of the MESH2D function `DEGHIST` by Darren Engwirda.
+    Translation of the MESH2D function ``DEGHIST``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
     if ax is None:
@@ -191,19 +167,20 @@ def deghist(dd, ty, ax=None):
 
 
 def anghist(ad, ty, ax=None):
-    """
-    Plot a histogram for the mesh quality metric "angle".
+    """Plot a histogram of triangle angles.
 
     Parameters
     ----------
     ad : array_like
-        Array of internal triangle angles (in degrees).
+        Internal angles in degrees.
     ty : str
-        Type of triangulation ('tria3' or 'tria4').
+        Mesh type label (``'tria3'`` or ``'tria4'``).
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; defaults to the current axes.
 
     References
     ----------
-    Translation of the MESH2D function `ANGHIST` by Darren Engwirda.
+    Translation of the MESH2D function ``ANGHIST``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
     if ax is None:
@@ -298,19 +275,20 @@ def anghist(ad, ty, ax=None):
 
 
 def scrhist(sc, ty, ax=None):
-    """
-    Plot a histogram for the mesh quality metric "score".
+    """Plot a histogram of element quality scores.
 
     Parameters
     ----------
     sc : array_like
-        Array of quality scores (values between 0 and 1).
+        Quality scores in ``[0, 1]``.
     ty : str
-        Type of triangulation ('tria3', 'tria4', 'dual3', or 'dual4').
+        Mesh type label (``'tria3'``, ``'tria4'``, ``'dual3'``, or ``'dual4'``).
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; defaults to the current axes.
 
     References
     ----------
-    Translation of the MESH2D function `SCRHIST` by Darren Engwirda.
+    Translation of the MESH2D function ``SCRHIST``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
@@ -389,19 +367,20 @@ def scrhist(sc, ty, ax=None):
 
 
 def hfnhist(hf, ty, ax=None):
-    """
-    Plot a histogram for the mesh quality metric "hfunc".
+    """Plot a histogram of relative mesh-size ratios.
 
     Parameters
     ----------
     hf : array_like
-        Array of h-values (ratio of actual edge length to target edge length).
+        Ratio of actual to target edge length.
     ty : str
-        Type of triangulation ('tria3', 'tria4', etc.) — kept for compatibility.
+        Mesh type label (kept for API compatibility).
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; defaults to the current axes.
 
     References
     ----------
-    Translation of the MESH2D function `HFNHIST` by Darren Engwirda.
+    Translation of the MESH2D function ``HFNHIST``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 

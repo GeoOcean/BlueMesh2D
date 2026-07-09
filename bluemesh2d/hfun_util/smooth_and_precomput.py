@@ -89,7 +89,7 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
     xmin, ymin, xmax, ymax = bounds
     w, h = xmax - xmin, ymax - ymin
 
-    # -----------------------probe the size range to auto-scale the sampling
+    # Probe the size range to auto-scale the sampling
     px = np.linspace(xmin, xmax, 80)
     py = np.linspace(ymin, ymax, 80)
     PX, PY = np.meshgrid(px, py)
@@ -105,7 +105,7 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
     # pad by the influence radius so the field is valid up to the domain edge
     margin = min((hmax_est - hmin_est) / g, 0.25 * max(w, h))
 
-    # -----------------------build the sampling grid and sample hfun once
+    # Build the sampling grid and sample hfun once
     xs = np.arange(xmin - margin, xmax + margin + cell_size, cell_size)
     ys = np.arange(ymin - margin, ymax + margin + cell_size, cell_size)
     X, Y = np.meshgrid(xs, ys)  # (ny, nx)
@@ -115,7 +115,7 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
     H[~np.isfinite(H)] = hmax_est
     H_raw = H.copy()  # keep the un-limited field for the optional plot
 
-    # -----------------------limit the gradient (grid "limgrad")
+    # Limit the gradient (grid "limgrad")
     # Relax every cell against its 8 neighbours until no value can still be
     # lowered to satisfy h[a] - h[b] <= max_gradient * dist(a, b).
     dx = xs[1] - xs[0]
@@ -142,7 +142,6 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
         if not changed:
             break
 
-    # -----------------------optional comparison plot
     if plot:
         extent = [xs[0], xs[-1], ys[0], ys[-1]]
         vmin, vmax = H_raw.min(), H_raw.max()
@@ -160,7 +159,7 @@ def smooth_precomput_hfun(hfun, domain=None, max_gradient=0.1, cell_size=None, p
         fig.tight_layout()
         plt.show()
 
-    # -----------------------cache result in a fast interpolator
+    # Cache result in a fast interpolator
     # Smooth the gridded field once with a light Gaussian blur, then look it up
     # with plain *linear* interpolation. pchip reconstruction removes the same
     # grid-line kinks (the "raster cell" imprint) but costs ~1000x more per query

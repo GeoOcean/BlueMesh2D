@@ -2,37 +2,26 @@ import numpy as np
 
 
 def trideg(pp, tt):
-    """
-    Compute the topological degree of vertices in a 2-simplex triangulation.
-
-    This function calculates the number of triangles incident to each vertex
-    in a 2D triangulation, also known as the vertex degree.
+    """Count incident triangles at each vertex.
 
     Parameters
     ----------
-    VERT : ndarray of shape (V, D)
-        Coordinates of the vertices in the triangulation, where `D` = 2.
-    TRIA : ndarray of shape (T, 3)
-        Array of triangle vertex indices defining the 2-simplexes.
+    pp : ndarray of shape (V, D)
+        Vertex coordinates (``D >= 2``).
+    tt : ndarray of shape (T, 3)
+        Triangle connectivity.
 
     Returns
     -------
-    VDEG : ndarray of shape (V,)
-        Number of triangles incident to each vertex (vertex degree).
-
-    Notes
-    -----
-    - The vertex degree indicates local mesh connectivity and can be used
-      to detect irregular or boundary vertices.
-    - Typically, well-shaped interior vertices in a regular mesh have a degree of ~6.
+    vdeg : ndarray of shape (V,), dtype int
+        Number of triangles incident to each vertex.
 
     References
     ----------
-    Translation of the MESH2D function `TRIDEG2`.
+    Translation of the MESH2D function ``TRIDEG2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- basic checks
     if not (isinstance(pp, np.ndarray) and isinstance(tt, np.ndarray)):
         raise TypeError("trideg:incorrectInputClass")
 
@@ -47,7 +36,6 @@ def trideg(pp, tt):
     if np.min(tt[:, :3]) < 0 or np.max(tt[:, :3]) >= nvrt:
         raise ValueError("trideg:invalidInputs")
 
-    # ------------------------------------- compute vertex degree
     vdeg = np.zeros(nvrt, dtype=int)
 
     for tri in tt[:, :3]:

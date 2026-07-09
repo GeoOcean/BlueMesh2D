@@ -13,40 +13,38 @@ def interpolate_from_xyz(
     rbf_function="cubic",
     epsilon=None,
 ):
-    """
-    Interpolation of values from scattered (x, y, z, value) points at arbitrary 3D nodes.
+    """Interpolate scattered values at arbitrary target coordinates.
 
     Parameters
     ----------
-    x, y, z : (N,) ndarray
-        Coordinates of the scattered data points.
-    vert : (N, 3) ndarray
-        Target coordinates (x, y, z) where interpolation is evaluated.
+    x, y : ndarray of shape (N,)
+        Coordinates of scattered data points.
+    z : ndarray of shape (N,)
+        Scalar values at the scattered points.
+    vert : ndarray of shape (M, 2) or (M, 3)
+        Target coordinates where interpolation is evaluated.
     method : {'linear', 'nearest', 'rbf'}, optional
-        Interpolation method:
-        - 'linear' : piecewise linear interpolation using tetrahedra (scipy.LinearNDInterpolator)
-        - 'nearest': nearest-neighbor interpolation using KDTree
-        - 'rbf'    : smooth radial basis interpolation (scipy.RBFInterpolator)
-    delimiter : str, optional
-        Column delimiter in the file (default auto).
+        Interpolation method. ``'linear'`` uses
+        :class:`scipy.interpolate.LinearNDInterpolator`; ``'nearest'`` uses a
+        KD-tree; ``'rbf'`` uses :class:`scipy.interpolate.RBFInterpolator``.
     rbf_function : str, optional
-        RBF kernel function ('multiquadric', 'inverse', 'gaussian', 'thin_plate_spline', etc.)
-        Used only if method='rbf'.
+        RBF kernel (e.g. ``'cubic'``, ``'thin_plate_spline'``). Used only when
+        ``method='rbf'``.
     epsilon : float, optional
-        Shape parameter for RBF interpolation. Auto-estimated if None.
+        RBF shape parameter. Auto-estimated when ``None``.
 
     Returns
     -------
-    values_interp : (N,) ndarray
-        Interpolated values at the target 3D points.
+    values_interp : ndarray of shape (M,)
+        Interpolated values at ``vert`` (negated; NaN replaced by 0).
     """
 
-    # --- Remove invalid points
+    # Remove invalid points
     mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
     x, y, z = x[mask], y[mask], z[mask]
     points = np.column_stack((x, y))
 
-    # --- Interpolation method
+    # Interpolation method
     if method == "linear":
         interp = LinearNDInterpolator(points, z, fill_value=np.nan)
         values_interp = interp(vert[:, 0], vert[:, 1], vert[:, 2])
@@ -63,7 +61,7 @@ def interpolate_from_xyz(
     else:
         raise ValueError("method must be 'linear', 'nearest', or 'rbf'")
 
-    # --- Handle NaNs
+    # Handle NaNs
     values_interp = - np.asarray(values_interp, dtype=float)
     values_interp[np.isnan(values_interp)] = 0
 
@@ -73,28 +71,29 @@ def interpolate_from_xyz(
 def interpolate_from_tiff(
     tiff_path, vert, input_crs=None, order=3, mode="constant", cval=np.nan
 ):
-    """
-    Fast interpolation of GeoTIFF values at mesh nodes (bicubic/bilinear).
+    """Interpolate GeoTIFF raster values at mesh node coordinates.
 
     Parameters
     ----------
     tiff_path : str
-        Path to GeoTIFF file.
-    vert : (N, 2) array
-        Node coordinates (x, y) in input CRS.
+        Path to the GeoTIFF file.
+    vert : ndarray of shape (N, 2)
+        Node coordinates ``(x, y)`` in ``input_crs``.
     input_crs : str or pyproj.CRS, optional
-        CRS of input mesh. If None, assumes same as raster.
-    order : int
-        Interpolation order (0=nearest, 1=bilinear, 3=bicubic).
-    mode : str
-        Boundary handling mode for map_coordinates.
-    cval : float
-        Constant value outside domain if mode="constant".
+        CRS of ``vert``. If ``None``, assumes the raster CRS.
+    order : int, optional
+        Interpolation order for :func:`scipy.ndimage.map_coordinates` (0 =
+        nearest, 1 = bilinear, 3 = bicubic). Default is 3.
+    mode : str, optional
+        Boundary handling mode. Default is ``'constant'``.
+    cval : float, optional
+        Fill value outside the domain when ``mode='constant'``. Default is
+        ``np.nan``.
 
     Returns
     -------
-    z : (N,) array
-        Interpolated raster values at mesh nodes.
+    z : ndarray of shape (N,)
+        Interpolated raster values at mesh nodes (negated).
     """
     with rasterio.open(tiff_path) as src:
         band = src.read(1).astype(np.float64)
@@ -166,37 +165,38 @@ def interpolate_from_xr(
     fill_nan=True,
     handle_out_of_bounds="nearest",
 ):
-    """
-    Fast interpolation of bathymetry values from an xarray.Dataset (e.g. GEBCO)
-    at given mesh nodes (bicubic/bilinear).
+    """Interpolate bathymetry from an xarray dataset at mesh node coordinates.
 
     Parameters
     ----------
     ds : xarray.Dataset
-        Dataset with coordinates 'lat' and 'lon' and variable `var_name`.
-    vert : (N, 2) array
-        Node coordinates (lon, lat) in degrees (EPSG:4326).
+        Dataset with coordinate and elevation variables.
+    vert : ndarray of shape (N, 2)
+        Node coordinates ``(lon, lat)`` in degrees (EPSG:4326).
     order : int, optional
-        Interpolation order (0=nearest, 1=bilinear, 3=bicubic). Default 3.
+        Interpolation order (0 = nearest, 1 = bilinear, 3 = bicubic). Default is 3.
     mode : str, optional
-        Boundary handling mode for map_coordinates. Default "constant".
+        Boundary handling mode for :func:`scipy.ndimage.map_coordinates`.
+        Default is ``'constant'``.
     cval : float, optional
-        Constant value outside domain if mode="constant". Default np.nan.
-    var_name : str, optional
-        Name of the variable in `ds` containing elevation values.
+        Fill value outside the domain when ``mode='constant'``. Default is
+        ``np.nan``.
+    x_name, y_name : str, optional
+        Names of the longitude and latitude coordinate variables in ``ds``.
+    z_name : str, optional
+        Name of the elevation variable in ``ds``. Default is ``'elevation'``.
     fill_nan : bool, optional
-        If True, fill NaN values in dataset with nearest valid value. Default True.
-    handle_out_of_bounds : str, optional
-        How to handle out-of-bounds points: "nearest" (use nearest neighbor),
-        "nan" (return NaN), or "clip" (clip to domain bounds). Default "nearest".
+        If ``True``, fill NaN values in the dataset with the nearest valid
+        value. Default is ``True``.
+    handle_out_of_bounds : {'nearest', 'nan', 'clip'}, optional
+        Strategy for points outside the dataset extent. Default is ``'nearest'``.
 
     Returns
     -------
-    z : (N,) array
+    z : ndarray of shape (N,)
         Interpolated depth values at mesh nodes (positive for ocean depth).
     """
 
-    # -----------------------extract coordinates and data
     lon = ds[x_name].values
     lat = ds[y_name].values
     band = np.asarray(ds[z_name].values).astype(float)
@@ -207,15 +207,14 @@ def interpolate_from_xr(
         _, indices = distance_transform_edt(mask, return_indices=True)
         band = band[tuple(indices)]
 
-    # -----------------------extract coordinates (assumed to be lon/lat)
+    # Extract coordinates (assumed to be lon/lat)
     xs, ys = vert[:, 0], vert[:, 1]
 
-    # -----------------------compute pixel indices
     # np.interp returns indices even for out-of-bounds values (extrapolates)
     lon_idx = np.interp(xs, lon, np.arange(len(lon)))
     lat_idx = np.interp(ys, lat, np.arange(len(lat)))
     
-    # -----------------------identify points inside/outside domain
+    # Identify points inside/outside domain
     lon_min, lon_max = lon.min(), lon.max()
     lat_min, lat_max = lat.min(), lat.max()
     
@@ -227,7 +226,7 @@ def interpolate_from_xr(
     # Initialize output array
     z = np.full_like(xs, np.nan, dtype=float)
     
-    # -----------------------interpolate points inside domain
+    # Interpolate points inside domain
     if np.any(mask_inside):
         # Clip indices to valid range for map_coordinates
         lat_idx_clip = np.clip(lat_idx[mask_inside], 0, len(lat) - 1)
@@ -242,7 +241,6 @@ def interpolate_from_xr(
             prefilter=(order > 1)  # Prefilter only for order > 1 (bicubic)
         )
     
-    # -----------------------handle out-of-bounds points
     if np.any(~mask_inside):
         if handle_out_of_bounds == "nearest":
             # Use nearest neighbor for out-of-bounds points

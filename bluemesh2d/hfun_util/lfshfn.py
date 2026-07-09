@@ -5,57 +5,37 @@ from .limhfn import limhfn
 
 
 def lfshfn(node=None, PSLG=None, part=None, opts=None):
-    """
-    Compute a discrete local-feature-size (LFS) estimate for a 2D polygonal domain.
-
-    This function estimates the local feature size (LFS) field for a polygonal
-    geometry embedded in 2D space, returning a triangulated mesh representation
-    of the feature-size distribution. The LFS is a measure of the local spacing
-    between nearby features (edges, corners, boundaries) and is often used to
-    define mesh-size constraints in adaptive meshing.
+    """Estimate a local feature-size field for a 2D polygonal domain.
 
     Parameters
     ----------
-    NODE : ndarray of shape (N, 2)
-        XY-coordinates of the polygon vertices.
-    EDGE : ndarray of shape (E, 2), optional
-        Array of polygon edge indices. Each row defines one edge as
-        `[start_vertex, end_vertex]`.
-        If omitted, vertices in `NODE` are assumed to be connected in order.
-    PART : list of lists or list of ndarrays, optional
-        For multi-connected geometries, specifies multiple polygonal regions.
-        Each `PART[k]` contains edge indices into `EDGE` defining one subregion.
+    node : ndarray of shape (N, 2), optional
+        Polygon vertex coordinates.
+    PSLG : ndarray of shape (E, 2), optional
+        Edge connectivity as indices into ``node``. When omitted, vertices
+        in ``node`` are connected in order.
+    part : list of ndarray, optional
+        For multiply-connected domains, edge-index lists into ``PSLG`` for
+        each subregion.
+    opts : dict, optional
+        Refinement options forwarded to :func:`refine`; defaults are filled
+        by :func:`makeopt`.
 
     Returns
     -------
-    VERT : ndarray of shape (V, 2)
-        XY-coordinates of the vertices in the generated triangulation.
-    TRIA : ndarray of shape (T, 3)
-        Array of triangle vertex indices.
-    HFUN : ndarray of shape (V,)
-        Estimated local feature-size (mesh-size) values at each vertex.
-
-    Notes
-    -----
-    - The local feature size quantifies the minimum distance to nearby boundaries
-      or sharp geometric features.
-    - The resulting field can be used to guide mesh refinement or smoothing
-      algorithms (e.g., `refine` or `smooth`).
-    - For multi-part geometries, the computation is performed separately on each part.
+    vert : ndarray of shape (V, 2)
+        Vertex coordinates of the generated triangulation.
+    tria : ndarray of shape (T, 3)
+        Triangle connectivity.
+    hlfs : ndarray of shape (V,)
+        Local feature-size estimate at each vertex.
 
     References
     ----------
-    Translation of the MESH2D function `LFSHFN2`.
+    Translation of the MESH2D function ``LFSHFN2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
-
-    See also
-    --------
-    trihfn : Compute a mesh-size function based on triangle areas.
-    limhfn : Limit or smooth a mesh-size field.
-    idxtri : Index-based triangle utilities.
     """
 
-    # ---------------------------------------------- extract args
     if node is None:
         node = np.empty((0, 2))
     if PSLG is None:
@@ -65,15 +45,12 @@ def lfshfn(node=None, PSLG=None, part=None, opts=None):
     if opts is None:
         opts = {}
 
-    # ------------------------------ build coarse background grid
     opts = makeopt(opts)
 
     vert, conn, tria, tnum = refine(node, PSLG, part, opts)
 
-    # ------------------------------ estimate local-feature-size
     hlfs = np.full(vert.shape[0], np.inf)
 
-    # ------------------------------ calc. LFS based on edge-len.
     evec = vert[conn[:, 1], :] - vert[conn[:, 0], :]
     elen = np.sqrt(np.sum(evec**2, axis=1))
     hlen = elen.copy()
@@ -85,7 +62,6 @@ def lfshfn(node=None, PSLG=None, part=None, opts=None):
         hlfs[ivrt] = min(hlfs[ivrt], hlen[epos])
         hlfs[jvrt] = min(hlfs[jvrt], hlen[epos])
 
-    # ------------------------------ push gradient limits on HFUN
     DHDX = opts["dhdx"]
 
     hlfs = limhfn(vert, tria, hlfs, DHDX)
@@ -94,8 +70,17 @@ def lfshfn(node=None, PSLG=None, part=None, opts=None):
 
 
 def makeopt(opts):
-    """
-    Setup the options dictionary for lfshfn.
+    """Fill default options for :func:`lfshfn`.
+
+    Parameters
+    ----------
+    opts : dict
+        User options; missing keys receive defaults.
+
+    Returns
+    -------
+    opts : dict
+        Options with defaults for ``"kind"``, ``"rho2"``, and ``"dhdx"``.
     """
     # clone to avoid side-effects
     opts = dict(opts)

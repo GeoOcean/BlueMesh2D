@@ -2,38 +2,26 @@ import numpy as np
 
 
 def triang(pp, tt):
-    """
-    Compute the internal angles for a 2-simplex triangulation
-    embedded in the two-dimensional plane.
-
-    This function calculates the internal (enclosed) angles of each triangle
-    in a given triangulation.
+    """Compute internal triangle angles in degrees.
 
     Parameters
     ----------
-    VERT : ndarray of shape (V, 2)
-        Coordinates of the vertices in the triangulation.
-    TRIA : ndarray of shape (T, 3)
-        Array of triangle vertex indices defining the 2-simplexes.
+    pp : ndarray of shape (V, 2)
+        Vertex coordinates.
+    tt : ndarray of shape (T, 3)
+        Triangle connectivity.
 
     Returns
     -------
-    ADEG : ndarray of shape (T, 3)
-        Internal angles (in degrees) for each triangle, where each row
-        contains the three vertex angles of a given triangle.
-
-    Notes
-    -----
-    - Angles are computed from the vertex coordinates and returned in degrees.
-    - Useful for evaluating triangle shape quality and detecting sliver elements.
+    dcos : ndarray of shape (T, 3)
+        Internal angles at the three vertices of each triangle.
 
     References
     ----------
-    Translation of the MESH2D function `TRIANG2`.
+    Translation of the MESH2D function ``TRIANG2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # --------------------------------------------- basic checks
     if not (isinstance(pp, np.ndarray) and isinstance(tt, np.ndarray)):
         raise TypeError("triang:incorrectInputClass")
 
@@ -46,7 +34,6 @@ def triang(pp, tt):
     if np.min(tt[:, :3]) < 0 or np.max(tt[:, :3]) >= nnod:
         raise ValueError("triang:invalidInputs")
 
-    # ----------------------------------- compute enclosed angles
     dcos = np.zeros((tt.shape[0], 3))
 
     ev12 = pp[tt[:, 1], :] - pp[tt[:, 0], :]

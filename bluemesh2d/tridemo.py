@@ -15,52 +15,33 @@ from bluemesh2d.tricost import tricost
 
 
 def tridemo(demo):
-    """
-    Run various 2D triangulation demo problems from MESH2D.
-
-    This function executes one of the available demonstration problems
-    for mesh generation using Delaunay-based techniques.
+    """Run a MESH2D-style 2D triangulation demo by index.
 
     Parameters
     ----------
     demo : int
-        Index of the demo to run.
-
-    Available Demos
-    ---------------
-    - DEMO-0 : Very simple example to start with — construct a mesh for
-      a square domain with a square hole cut from its center.
-    - DEMO-1 : Explore the impact of the "radius-edge" threshold (RHO2)
-      on mesh density and quality.
-    - DEMO-2 : Compare the "Frontal-Delaunay" and "Delaunay-refinement"
-      algorithms.
-    - DEMO-3 : Explore the impact of user-defined mesh-size constraints.
-    - DEMO-4 : Explore the effects of "hill-climbing" mesh optimization.
-    - DEMO-5 : Assemble triangulations for multi-part geometries.
-    - DEMO-6 : Assemble triangulations for geometries with internal
-      constraints.
-    - DEMO-7 : Investigate the use of quadtree-type refinement.
-    - DEMO-8 : Explore user-defined mesh-size constraints (variant).
-    - DEMO-9 : Large-scale problem: mesh refinement and optimization.
-    - DEMO10 : Medium-scale problem: mesh refinement and optimization.
-
-    See Also
-    --------
-    refine2 : Delaunay-based mesh refinement.
-    smooth2 : Smoothing and optimization of triangulations.
-    tridiv2 : Triangulation division for multi-part domains.
-    fixgeo2 : Geometry correction and boundary preparation.
-
-    References
-    ----------
-    Translation of the MESH2D function `TRIDEMO` by Darren Engwirda.
-    Original MATLAB source: https://github.com/dengwirda/mesh2d
+        Demo index (0–10).
 
     Notes
     -----
-    Original author: Darren Engwirda
-    Email: d.engwirda@gmail.com
-    Last updated: 09/07/2018
+    Available demos:
+
+    - 0 : Square with a central square hole (basic PSLG and size constraints).
+    - 1 : Effect of the radius–edge threshold ``rho2`` on mesh density/quality.
+    - 2 : Compare Delaunay-refinement vs. Frontal-Delaunay ``kind``.
+    - 3 : User-defined mesh-size constraints (airfoil, ``lfshfn`` / ``trihfn``).
+    - 4 : Hill-climbing smoothing and quality histograms.
+    - 5 : Multi-part geometry definitions.
+    - 6 : Geometries with internal edge constraints.
+    - 7 : Quadtree-style refinement via :func:`~bluemesh2d.mesh_util.tridiv.tridiv`.
+    - 8 : Custom mesh-size function (``hfun8``).
+    - 9 : Large-scale mesh refinement and optimization (islands).
+    - 10 : Medium-scale mesh refinement and optimization (river).
+
+    References
+    ----------
+    Translation of the MESH2D function ``TRIDEMO``.
+    Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
     if demo == 0:
@@ -90,9 +71,7 @@ def tridemo(demo):
 
 
 def demo0():
-    """
-    DEMO0 a very simple example to start with -- mesh a square domain with a square hold cut from its centre.
-    """
+    """Mesh a square domain with a central square hole."""
 
     print(
         " A very simple example to start with -- construct a mesh for \n"
@@ -107,7 +86,6 @@ def demo0():
         " structed -- "
     )
 
-    # ------------------------------------------- setup geometry
     node = np.array(
         [  # list of xy "node" coordinates
             [0, 0],  # outer square
@@ -137,20 +115,16 @@ def demo0():
         - 1
     )
     opts = {}
-    # ------------------------------------------- call mesh-gen.
     vert, etri, tria, tnum = refine(node, edge, [], opts)
 
-    # ------------------------------------------- draw tria-mesh
     plt.figure()
     plt.triplot(vert[:, 0], vert[:, 1], tria[:, 0:3], color=[0.2, 0.2, 0.2])
     plt.gca().set_aspect("equal")
     plt.axis("off")
 
-    # ------------------------------------------- call mesh-gen with hfun
     hfun = 0.5  # uniform "target" edge-lengths
     vert, etri, tria, tnum = refine(node, edge, [], opts, hfun)
 
-    # ------------------------------------------- draw tria-mesh
     plt.figure()
     plt.triplot(vert[:, 0], vert[:, 1], tria[:, 0:3], color=[0.2, 0.2, 0.2])
     plt.gca().set_aspect("equal")
@@ -161,9 +135,7 @@ def demo0():
 
 
 def demo1():
-    """
-    DEMO1 explore impact of RHO2 threshold on mesh density/quality
-    """
+    """Demonstrate the effect of ``rho2`` on mesh density and quality."""
 
     filepath = os.path.dirname(os.path.abspath(__file__))
     meshfile = os.path.join(filepath, "poly_data", "lake.msh")
@@ -178,7 +150,6 @@ def demo1():
         " und RHO2. \n"
     )
 
-    # ---------------------------------------------- RHO2 = +1.50
     print("\n")
     print(
         " Setting large values for RHO2, (RHO2 = 1.50 here) generates \n"
@@ -196,7 +167,6 @@ def demo1():
 
     plt.title(f"TRIA-MESH: RHO2<=+1.50, |TRIA|={tria.shape[0]}")
 
-    # ---------------------------------------------- RHO2 = +1.00
     print(
         " Setting small values for RHO2, (RHO2 = 1.00 here) generates \n"
         " dense triangulations with good worst-case angle bounds. \n"
@@ -218,9 +188,7 @@ def demo1():
 
 
 def demo2():
-    """
-    DEMO2 explore impact of refinement "KIND" on mesh quality/density.
-    """
+    """Compare Delaunay-refinement and Frontal-Delaunay ``kind`` options."""
 
     filepath = os.path.dirname(os.path.abspath(__file__))
     meshfile = os.path.join(filepath, "poly_data", "lake.msh")
@@ -237,7 +205,6 @@ def demo2():
         " sfied in a guaranteed manner. \n"
     )
 
-    # ---------------------------------------------- KIND = "DELAUNAY"
     opts = {"kind": "delaunay", "rho2": 1.00}
 
     vert, etri, tria, tnum = refine(node, edge, [], opts)
@@ -249,7 +216,6 @@ def demo2():
 
     plt.title(f"TRIA-MESH: KIND=DELAUNAY, |TRIA|={tria.shape[0]}")
 
-    # ---------------------------------------------- KIND = "DELFRONT"
     opts = {"kind": "delfront", "rho2": 1.00}
 
     vert, etri, tria, tnum = refine(node, edge, [], opts)
@@ -266,9 +232,7 @@ def demo2():
 
 
 def demo3():
-    """
-    DEMO3 explore impact of user-defined mesh-size constraints.
-    """
+    """Demonstrate user-defined mesh-size constraints on an airfoil geometry."""
 
     # équivalent de mfilename('fullpath')
     filepath = os.path.dirname(os.path.abspath(__file__))
@@ -287,7 +251,6 @@ def demo3():
         " presence of mesh-size constraints. \n"
     )
 
-    # ---------------------------------------------- do size-fun.
     olfs = {"dhdx": 0.15}
 
     vlfs, tlfs, hlfs = lfshfn(node, edge, [], olfs)
@@ -307,7 +270,6 @@ def demo3():
     plt.axis("off")
     plt.title(f"MESH-SIZE: KIND=DELAUNAY, |TRIA|={tlfs.shape[0]}")
 
-    # ---------------------------------------------- do mesh-gen.
     hfun = trihfn
 
     vert, etri, tria, tnum = refine(node, edge, [], {}, hfun, vlfs, tlfs, slfs, hlfs)
@@ -324,9 +286,7 @@ def demo3():
 
 
 def demo4():
-    """
-    DEMO4 explore impact of "hill-climbing" mesh optimisations.
-    """
+    """Demonstrate hill-climbing smoothing and quality histograms."""
 
     # Équivalent MATLAB mfilename / fileparts
     filepath = os.path.dirname(os.path.abspath(__file__))
@@ -344,13 +304,11 @@ def demo4():
         " quality, plotting histograms of various quality metrics. \n"
     )
 
-    # ---------------------------------------------- do size-fun.
     olfs = {"dhdx": 0.15}
 
     vlfs, tlfs, hlfs = lfshfn(node, edge, [], olfs)
     slfs = idxtri(vlfs, tlfs)
 
-    # ---------------------------------------------- do mesh-gen.
     hfun = trihfn
 
     vert, etri, tria, tnum = refine(node, edge, [], {}, hfun, vlfs, tlfs, slfs, hlfs)
@@ -362,7 +320,6 @@ def demo4():
 
     plt.title(f"MESH-REF.: KIND=DELFRONT, |TRIA|={tria.shape[0]}")
 
-    # ---------------------------------------------- do mesh-opt.
     vnew, enew, tnew, tnum = smooth(vert, etri, tria, tnum)
 
     plt.figure()
@@ -372,7 +329,6 @@ def demo4():
 
     plt.title(f"MESH-OPT.: KIND=DELFRONT, |TRIA|={tnew.shape[0]}")
 
-    # ---------------------------------------------- analyse qualité
     hvrt = trihfn(vert, vlfs, tlfs, slfs, hlfs)
     hnew = trihfn(vnew, vlfs, tlfs, slfs, hlfs)
 
@@ -383,9 +339,7 @@ def demo4():
 
 
 def demo5():
-    """
-    DEMO5 : assemble triangulations for multi-part geometry definitions.
-    """
+    """Mesh a multi-part geometry with conforming triangulation."""
 
     print(
         "Both refine and smooth routines support multi-part geometry\n"
@@ -393,7 +347,6 @@ def demo5():
         "internal and external constraints.\n"
     )
 
-    # ---------------------------------------------- create geometry
 
     nod1 = np.array([[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]])
 
@@ -420,7 +373,6 @@ def demo5():
     ecir = np.vstack((ecir, [numc - 1, 0]))
     tagc = np.full((ecir.shape[0], 1), 2, dtype=int)
 
-    # ---------------------------------------------- merge geometries
 
     # offset inner square indices
     edg2 = edg2 + nod1.shape[0]
@@ -432,7 +384,6 @@ def demo5():
     edge = np.vstack((edge, np.hstack((ecir, tagc))))
     node = np.vstack((node, ncir))
 
-    # ---------------------------------------------- define parts
 
     edge_tag = edge[:, 2].astype(int)
     part = [
@@ -443,24 +394,20 @@ def demo5():
 
     edge = edge[:, :2].astype(int)
 
-    # ---------------------------------------------- size function
 
     hmax = 0.045
     vlfs, tlfs, hlfs = lfshfn(node, edge, part)
     hlfs = np.minimum(hmax, hlfs)
     slfs = idxtri(vlfs, tlfs)
 
-    # ---------------------------------------------- mesh generation
 
     hfun = trihfn
 
     vert, etri, tria, tnum = refine(node, edge, part, {}, hfun, vlfs, tlfs, slfs, hlfs)
 
-    # ---------------------------------------------- mesh optimization
 
     vert, etri, tria, tnum = smooth(vert, etri, tria, tnum)
 
-    # ---------------------------------------------- visualization
 
     plt.figure()
     for k, color in zip([1, 2, 3], [[0, 0, 0], [0.1, 0.1, 0.1], [0.2, 0.2, 0.2]]):
@@ -483,16 +430,13 @@ def demo5():
 
 
 def demo6():
-    """
-    DEMO6 build triangulations for geometries with internal constraints.
-    """
+    """Mesh a domain with internal edge constraints."""
 
     print(
         " Both the refine and smooth routines also support geometr- \n"
         " ies containing 'internal' constraints. \n"
     )
 
-    # ---------------------------------------------- create geom.
     node = np.array(
         [
             [-1.0, -1.0],
@@ -549,15 +493,12 @@ def demo6():
     """
     part = [np.array([0, 1, 2, 3])]
 
-    # ---------------------------------------------- do size-fun.
     hmax = 0.175
 
-    # ---------------------------------------------- do mesh-gen.
     opts = {"kind": "delaunay"}
 
     vert, etri, tria, tnum = refine(node, edge, part, opts, hmax)
 
-    # ---------------------------------------------- do mesh-opt.
     vert, etri, tria, tnum = smooth(vert, etri, tria, tnum)
 
     plt.figure()
@@ -575,9 +516,7 @@ def demo6():
 
 
 def demo7():
-    """
-    DEMO7 investigate the use of quadtree-type mesh refinement.
-    """
+    """Demonstrate quadtree-style refinement via :func:`~bluemesh2d.mesh_util.tridiv.tridiv`."""
 
     filename = __file__
     filepath = "/".join(filename.split("/")[:-1])
@@ -593,7 +532,6 @@ def demo7():
         " quality triangulations to be generated. \n"
     )
 
-    # ---------------------------------------------- do size-fun.
     vlfs, tlfs, hlfs = lfshfn(node, edge)
     slfs = idxtri(vlfs, tlfs)
 
@@ -603,12 +541,10 @@ def demo7():
     hmax = np.mean(pmax - pmin) / 17.0
     hlfs = np.minimum(hmax, hlfs)
 
-    # ---------------------------------------------- do mesh-gen.
     hfun = trihfn
 
     vert, etri, tria, tnum = refine(node, edge, [], {}, hfun, vlfs, tlfs, slfs, hlfs)
 
-    # ---------------------------------------------- do mesh-opt.
     vert, etri, tria, tnum = smooth(vert, etri, tria, tnum)
     vnew, enew, tnew, tnum = tridiv(vert, etri, tria, tnum)
     vnew, enew, tnew, tnum = smooth(vnew, enew, tnew, tnum)
@@ -634,11 +570,8 @@ def demo7():
 
 
 def demo8():
-    """
-    DEMO8 explore impact of "hill-climbing" mesh optimisations.
-    """
+    """Demonstrate a custom Gaussian mesh-size function."""
 
-    # ---------------------------------------------- create geom.
     node = np.array([[-1.0, -1.0], [3.0, -1.0], [3.0, 1.0], [-1.0, 1.0]])
     edge = np.array([[0, 1], [1, 2], [2, 3], [3, 0]])
 
@@ -660,15 +593,12 @@ def demo8():
     edge = np.vstack([edge, ecir])
     node = np.vstack([node, ncir])
 
-    # ---------------------------------------------- do mesh-gen.
     hfun = hfun8
 
     vert, etri, tria, tnum = refine(node, edge, [], {}, hfun)
 
-    # ---------------------------------------------- do mesh-opt.
     vert, etri, tria, tnum = smooth(vert, etri, tria, tnum)
 
-    # ---------------------------------------------- plot mesh
     plt.figure()
     plt.triplot(vert[:, 0], vert[:, 1], tria[:, :3], color="k")
 
@@ -676,7 +606,6 @@ def demo8():
     plt.axis("off")
     plt.title(f"MESH-OPT.: KIND=DELFRONT, |TRIA|={tria.shape[0]}")
 
-    # ---------------------------------------------- plot mesh-size function
     plt.figure()
     facecolors = np.mean(hfun8(vert)[tria[:, :3]], axis=1)
     plt.tripcolor(
@@ -698,18 +627,17 @@ def demo8():
 
 
 def hfun8(test):
-    """
-    HFUN8 : user-defined mesh-size function for DEMO-8.
+    """Return a Gaussian mesh-size field for demo 8.
 
     Parameters
     ----------
-    test : ndarray of shape (N,2)
-        Coordinates (x,y) at which the mesh-size function is evaluated.
+    test : ndarray of shape (N, 2)
+        Evaluation coordinates.
 
     Returns
     -------
     hfun : ndarray of shape (N,)
-        Mesh-size values at input points.
+        Mesh-size values at ``test``.
     """
     hmax = 0.05
     hmin = 0.01
@@ -725,11 +653,8 @@ def hfun8(test):
 
 
 def demo9():
-    """
-    DEMO9 larger-scale problem, mesh refinement + optimisation.
-    """
+    """Run large-scale mesh refinement and optimization on the islands geometry."""
 
-    # ------------------------------------------- load geometry
     filename = __file__  # current file path
     filepath = "/".join(filename.split("/")[:-1])
     meshfile = f"{filepath}/poly_data/islands.msh"
@@ -737,61 +662,48 @@ def demo9():
     # Load input mesh geometry
     node, edge, _, _ = triread(meshfile)
 
-    # ------------------------------------------- do size-function
     vlfs, tlfs, hlfs = lfshfn(node, edge)
     slfs = idxtri(vlfs, tlfs)
 
-    # ------------------------------------------- do mesh-generation
     hfun = trihfn
     vert, etri, tria, tnum = refine(node, edge, [], {}, hfun, vlfs, tlfs, slfs, hlfs)
 
-    # ------------------------------------------- do mesh-optimisation
     vert, etri, tria, tnum = smooth(vert, etri, tria, tnum)
 
-    # ------------------------------------------- plot triangulated mesh
     plt.figure()
     plt.triplot(vert[:, 0], vert[:, 1], tria[:, :3], color="k")
     plt.gca().set_aspect("equal")
     plt.axis("off")
     plt.title(f"MESH-OPT.: KIND=DELFRONT, |TRIA|={tria.shape[0]}")
 
-    # ------------------------------------------- plot cost histograms
     tricost(vert, etri, tria, tnum)
 
     plt.show()
 
 
 def demo10():
-    """
-    DEMO10 medium-scale problem mesh refinement + optimisation.
-    """
+    """Run medium-scale mesh refinement and optimization on the river geometry."""
 
-    # ------------------------------------------- load geometry
     filename = __file__
     filepath = "/".join(filename.split("/")[:-1])
     meshfile = f"{filepath}/poly_data/river.msh"
 
     node, edge, _, _ = triread(meshfile)
 
-    # ------------------------------------------- do size-function
     vlfs, tlfs, hlfs = lfshfn(node, edge)
     slfs = idxtri(vlfs, tlfs)
 
-    # ------------------------------------------- do mesh-generation
     hfun = trihfn
     vert, etri, tria, tnum = refine(node, edge, [], {}, hfun, vlfs, tlfs, slfs, hlfs)
 
-    # ------------------------------------------- do mesh-optimisation
     vert, etri, tria, tnum = smooth(vert, etri, tria, tnum)
 
-    # ------------------------------------------- plot triangulated mesh
     plt.figure()
     plt.triplot(vert[:, 0], vert[:, 1], tria[:, :3], color="k")
     plt.gca().set_aspect("equal")
     plt.axis("off")
     plt.title(f"MESH-OPT.: KIND=DELFRONT, |TRIA|={tria.shape[0]}")
 
-    # ------------------------------------------- plot cost histograms
     tricost(vert, etri, tria, tnum)
 
     plt.show()

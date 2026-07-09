@@ -2,43 +2,31 @@ import numpy as np
 
 
 def relhfn(vert, tria, hvrt):
-    """
-    Compute the relative edge-length for a 2-simplex triangulation
-    embedded in Euclidean space.
+    """Compute relative edge lengths against a mesh-size function.
 
-    This function calculates the normalized edge lengths for each triangle edge,
-    indicating how well the triangulation conforms to the prescribed mesh-spacing
-    constraints.
+    For each unique mesh edge, return ``edge_length / mean(h at endpoints)``.
+    Values near 1 indicate good conformance to the sizing field.
 
     Parameters
     ----------
-    VERT : ndarray of shape (V, D)
-        Coordinates of the vertices in the triangulation, where `D` = 2 or 3.
-    TRIA : ndarray of shape (T, 3)
-        Array of triangle vertex indices defining the 2-simplexes.
-    HVRT : ndarray of shape (V,)
-        Mesh-spacing values evaluated at the triangulation vertices.
+    vert : ndarray of shape (V, 2)
+        Vertex coordinates.
+    tria : ndarray of shape (T, 3)
+        Triangle connectivity.
+    hvrt : ndarray of shape (V,)
+        Mesh-size function evaluated at vertices.
 
     Returns
     -------
-    HREL : ndarray of shape (E,)
-        Relative edge-lengths for all edges in the triangulation, defined as
-        the ratio between actual edge length and the average of the local
-        mesh-spacing values at the edge endpoints.
-
-    Notes
-    -----
-    - A relative length `HREL ≈ 1` indicates good conformance to the mesh-size
-      function, while values significantly greater than 1 suggest under-refinement.
-    - Commonly used in mesh-quality evaluation and adaptive refinement schemes.
+    hrel : ndarray of shape (E,)
+        Relative edge lengths for the unique edges in the triangulation.
 
     References
     ----------
-    Translation of the MESH2D function `RELHFN2`.
+    Translation of the MESH2D function ``RELHFN2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- basic checks
     if not (
         isinstance(vert, np.ndarray)
         and isinstance(tria, np.ndarray)
@@ -58,7 +46,6 @@ def relhfn(vert, tria, hvrt):
     if np.min(tria[:, :3]) < 0 or np.max(tria[:, :3]) >= nnod:
         raise ValueError("relhfn:invalidInputs")
 
-    # ----------------------------------- compute rel. mesh-sizes
     eset = np.vstack([tria[:, [0, 1]], tria[:, [1, 2]], tria[:, [2, 0]]])
 
     eset = np.sort(eset, axis=1)

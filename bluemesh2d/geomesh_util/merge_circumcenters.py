@@ -1,6 +1,7 @@
-"""
-Merge circumcenters: identify small flow links, merge each pair of triangles into a quad,
-then rebuild the mesh (triangles + quads) and return a new UGRID Dataset with the same form as the input.
+"""Merge circumcenters along small dual links into quadrilateral faces.
+
+Identifies short flow links, merges adjacent triangle pairs into quads, and
+rebuilds a mixed tri/quad UGRID dataset compatible with Delft3D-FM export.
 """
 
 import numpy as np
@@ -28,10 +29,7 @@ def _faces_list_from_ds(ds: xr.Dataset) -> list:
 
 
 def _mixed_faces_to_triangles(vert_xy: np.ndarray, faces: list) -> np.ndarray:
-    """
-    One triangle row per sub-triangle (quad split on merge diagonal ``(v1,v2)``),
-    aligned with the triangle proxy used by ``bluemesh2d.ortho_merge.orthogonalize``.
-    """
+    """Expand mixed faces to triangle rows using the merge diagonal ``(v1, v2)``."""
     xy = np.asarray(vert_xy, dtype=np.float64)[:, :2]
     tris: list = []
     for f in faces:
@@ -56,10 +54,7 @@ def _signed_area_quad(vert, quad):
 
 
 def _merge_small_links_into_faces(tria, edge_cc, small_link_indices, vert):
-    """
-    For each small link, merge the two adjacent triangles into one quad.
-    Return a list of faces: each is an array of 3 or 4 node indices (0-based).
-    """
+    """Merge triangle pairs along small links into quadrilateral faces."""
     merged = set()
     quads = []
     for idx in small_link_indices:
@@ -92,10 +87,7 @@ def _merge_small_links_into_faces(tria, edge_cc, small_link_indices, vert):
 
 
 def _rebuild_ds_from_form(ds_ori, ugrid_arrays):
-    """
-    Build ds_final from the form of ds_ori: same structure (coords, data_vars, attrs),
-    with data and dimension sizes from ugrid_arrays.
-    """
+    """Rebuild an xarray dataset preserving the structure of ``ds_ori``."""
 
     def _da(name, data, dims, attrs=None):
         if name in ds_ori.variables and hasattr(ds_ori.variables[name], "attrs"):
@@ -200,26 +192,28 @@ def merge_circumcenters(
     removesmalllinkstrsh=0.1,
     jsferic=1,
 ):
-    """
-    Identify small flow links (circumcenters too close), merge each pair of triangles
-    into one quad, rebuild the mesh (triangles + quads), and return a new Delft3D FM
-    mesh Dataset with the same form as ds_ori.
+    """Merge triangle pairs with small circumcenter links into quads.
+
+    Identifies short dual flow links, merges each adjacent triangle pair into
+    one quadrilateral, and rebuilds a Delft3D-FM UGRID dataset with the same
+    structure as ``ds_ori``.
 
     Parameters
     ----------
     ds_ori : xarray.Dataset
-        UGRID Delft3D FM mesh (mesh2d_node_x/y/z, mesh2d_face_nodes, etc.).
+        Input UGRID Delft3D-FM mesh.
     removesmalllinkstrsh : float, optional
-        Threshold for small flow links (default 0.1), same as in the notebook.
+        Threshold for small flow links. Default is 0.1.
     jsferic : int, optional
-        1 (default) treats node coordinates as lon/lat degrees; 0 treats them as
-        planar x/y.
+        Coordinate mode: ``1`` treats node coordinates as lon/lat degrees;
+        ``0`` treats them as planar ``x/y``. Default is 1.
 
     Returns
     -------
     ds_final : xarray.Dataset
-        New mesh with same structure as ds_ori; small links removed and replaced by quads.
-        mesh2d_nMax_face_nodes is 4; triangles are padded with fill in the 4th node index.
+        Rebuilt mesh with small links replaced by quads.
+        ``mesh2d_nMax_face_nodes`` is 4; triangles are padded in the fourth
+        node column.
     """
     node_x = np.asarray(ds_ori["mesh2d_node_x"].values, dtype=np.float64)
     node_y = np.asarray(ds_ori["mesh2d_node_y"].values, dtype=np.float64)

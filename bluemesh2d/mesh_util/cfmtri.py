@@ -5,37 +5,33 @@ from .setset import setset
 
 
 def cfmtri(vert, econ):
-    """
-    CFMTRI : compute a conforming 2-simplex Delaunay triangulation in the 2D plane.
+    """Compute a conforming 2-simplex Delaunay triangulation in the plane.
 
-    [vert, conn, tria] = cfmtri2(vert, conn) computes a conforming Delaunay
-    triangulation from a set of vertices and edge constraints. New vertices are
-    inserted to bisect constraining edges until all constraints are recovered.
+    Insert Steiner vertices by bisecting constraining edges until every edge
+    in ``econ`` appears in the Delaunay triangulation.
 
     Parameters
     ----------
-    vert : ndarray (V, 2)
-        Array of XY coordinates to be triangulated.
-    conn : ndarray (C, 2)
-        Array of constraining edges (each row defines an edge between vertices).
-    tria : ndarray (T, 3)
-        Array of vertex indices defining the triangles. Each row corresponds to
-        one triangle such that:
-        `vert[tria[ii, 0], :]`, `vert[tria[ii, 1], :]`, and `vert[tria[ii, 2], :]`
-        are the coordinates of the `ii`-th triangle.
+    vert : ndarray of shape (V, 2)
+        Vertex coordinates to triangulate.
+    econ : ndarray of shape (C, 2)
+        Constraining edges as vertex-index pairs.
 
-    See Also
-    --------
-    deltri : perform unconstrained Delaunay triangulation.
-    delaunayn : compute N-D Delaunay triangulation.
+    Returns
+    -------
+    vert : ndarray of shape (V, 2)
+        Vertex coordinates (including bisection Steiner points).
+    econ : ndarray of shape (C, 2)
+        Updated constraining edges after bisection.
+    tria : ndarray of shape (T, 3)
+        Triangle connectivity (CCW-oriented).
 
     References
     ----------
-    Translation of the MESH2D function `CFMTRI2`.
+    Translation of the MESH2D function ``CFMTRI2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # --------------------------------------------- basic checks
     if not isinstance(vert, np.ndarray) or not isinstance(econ, np.ndarray):
         raise TypeError("cfmtri:incorrectInputClass")
 
@@ -57,28 +53,24 @@ def cfmtri(vert, econ):
 
     #  keep bisecting edge constraints until they are all recovered!
     while True:
-        # ----------------- un-constrained delaunay triangulation
+        # Un-constrained delaunay triangulation
         tria = delaunay2(vert)
 
         nv = vert.shape[0]
         nt = tria.shape[0]
 
-        # ---------------------------- build non-unique edge-set
         ee = np.zeros((nt * 3, 2), dtype=int)
         ee[0:nt, :] = tria[:, [0, 1]]
         ee[nt : 2 * nt, :] = tria[:, [1, 2]]
         ee[2 * nt : 3 * nt, :] = tria[:, [2, 0]]
 
-        # ---------------- find constraints within tria-edge set
+        # Find constraints within tria-edge set
         in_mask, _ = setset(econ, ee)
-        # ---------------------------- done when have contraints
         if np.all(in_mask):
             break
 
-        # ----------------------------- un-recovered edge centres
         vm = (vert[econ[~in_mask, 0], :] + vert[econ[~in_mask, 1], :]) * 0.5
 
-        # ----------------------------- un-recovered edge indexes
         ev = np.arange(nv, nv + vm.shape[0])
         en = np.vstack(
             [
@@ -87,31 +79,29 @@ def cfmtri(vert, econ):
             ]
         )
 
-        # ---------------------------- push new vert/edge arrays
         vert = np.vstack([vert, vm])
         econ = np.vstack([econ[in_mask, :], en])
 
-    # --------------------------------- undo geomertic re-scaling
     vert = vert * vdel + vmid
 
     return vert, econ, tria
 
 
 def delaunay2(points, options=None):
-    """
-    delaunay2 compute a 2-simplex Delaunay triangulation in the two-dimensional plane.
+    """Compute a 2-simplex Delaunay triangulation in the plane.
 
     Parameters
     ----------
-    points : (N,2) array
-        XY coordinates of vertices to be triangulated.
+    points : ndarray of shape (N, 2)
+        Vertex coordinates to triangulate.
     options : str, optional
-        Qhull options string. If None, default options are used.
+        Qhull options passed to :class:`scipy.spatial.Delaunay`. Default is
+        ``'Qt Qbb Qc'`` in 2D and ``'Qt Qbb Qc Qx'`` for higher dimension.
 
     Returns
     -------
-    t : (T,3) array
-        Triangulation connectivity.
+    t : ndarray of shape (T, 3)
+        Triangle connectivity.
     """
     n, d = points.shape
 
