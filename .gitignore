@@ -209,3 +209,6 @@ __marimo__/
 # Data Files
 *.nc
 *.grd
+
+# Duplicated code for QGIS plugin
+bluemesh2d_qgis/bluemesh2d
