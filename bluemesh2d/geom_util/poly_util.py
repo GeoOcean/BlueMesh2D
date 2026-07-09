@@ -10,22 +10,22 @@ def simplify_polygon_by_angle(
     polygon: Polygon,
     min_angle_deg: float = 3.0,
 ) -> Polygon:
-    """
-    Simplify a polygon by removing points whose interior angle is below
-    min_angle_deg (very sharp turns).
-    Applies to both the exterior ring and all holes (interior rings).
+    """Remove vertices whose interior angle is below a threshold.
+
+    Applies to the exterior ring and all interior rings (holes).
 
     Parameters
     ----------
     polygon : shapely.geometry.Polygon
         Polygon to simplify.
-    min_angle_deg : float, default=3.0
-        Minimum angle in degrees. Points with a smaller interior angle are removed.
+    min_angle_deg : float, optional
+        Minimum interior angle in degrees. Vertices below this threshold are
+        removed. Default is 3.0.
 
     Returns
     -------
-    Polygon
-        Simplified polygon (exterior and interiors treated identically).
+    shapely.geometry.Polygon
+        Simplified polygon.
     """
 
     def _calculate_interior_angle(p1, p2, p3):
@@ -100,9 +100,8 @@ def simplify_polygon_by_angle(
     return Polygon(exterior_simplified, interiors_simplified)
 
 def _resample_ring_hfun(ring_coords, hfun, harg=()):
-    """
-    Helper function to resample a single ring (exterior or interior) using hfun.
-    
+    """Resample one closed ring using a mesh-size function.
+
     Parameters
     ----------
     ring_coords : ndarray of shape (N, 2)
@@ -218,9 +217,7 @@ def _resample_ring_hfun(ring_coords, hfun, harg=()):
 
 
 def _make_hfun_evaluator(reference_pts, hfun, harg=()):
-    """
-    Build hfun(pts) -> (M,) with NaN filled from the nearest reference vertex.
-    """
+    """Build a mesh-size evaluator with NaN filled from the nearest reference vertex."""
 
     def eval_h_raw(pts):
         pts = np.atleast_2d(pts)
@@ -306,14 +303,7 @@ def _ring_interior_angles(pts):
 
 
 def _prune_ring_by_angle(ring_coords, min_angle_deg):
-    """
-    Remove vertices at very sharp turns (interior angle < ``min_angle_deg``).
-
-    These "closed angle" spikes / needles are poor for meshing. Because pruning
-    a vertex can sharpen a neighbour, the pass is repeated until no vertex is
-    below the threshold. ``ring_coords`` is a closed ring (first point repeated
-    at the end); a closed ring is returned. ``min_angle_deg <= 0`` is a no-op.
-    """
+    """Remove vertices at sharp interior angles from a closed ring."""
     if min_angle_deg <= 0:
         return ring_coords
     ring = np.asarray(ring_coords, dtype=float)
@@ -348,23 +338,11 @@ def resample_polygon_hfun(
     min_angle_deg=0.0,
     min_hole_vertices=4,
 ):
-    """
-    Resample a closed polygon so that consecutive vertices are spaced by
-    approximately h(p) along the contour, where h is given by the mesh-size
-    function (same contract as in bluemesh2d).
+    """Resample a polygon boundary at approximately ``h(p)`` spacing.
 
-    Nodes are placed by arc-length equidistribution: the number of nodes is
-    ``round(int_contour ds / h(s))`` and they are distributed uniformly in the
-    h-normalised arc-length coordinate. That coordinate wraps exactly around the
-    closed contour, so every edge -- including the closing seam -- is ~h(p) and
-    no vertices end up abnormally close. The input vertex density therefore does
-    not influence the result, and no post-hoc pruning is needed. NaN values from
-    hfun are replaced by the h-value at the nearest polygon vertex. Holes
-    (interiors) are preserved.
-
-    Two optional clean-ups are applied to each resampled ring, in the same pass:
-    sharp "closed angle" spikes are removed (``min_angle_deg``) and holes with
-    too few vertices are dropped (``min_hole_vertices``).
+    Nodes are equidistributed in arc length weighted by the mesh-size function.
+    NaN values from ``hfun`` are replaced by the value at the nearest polygon
+    vertex. Optional angle pruning and hole filtering are applied per ring.
 
     Parameters
     ----------
@@ -464,10 +442,7 @@ def resample_polygon_hfun(
 
 
 def _resample_ring_by_spacing(xy: np.ndarray, spacing: float) -> np.ndarray:
-    """
-    Resample a ring (closed polygon) so points are spaced at least `spacing`
-    apart along the contour. Based on cumulative distance + linear interpolation.
-    """
+    """Resample a closed ring at uniform arc-length spacing."""
     xy = np.asarray(xy, dtype=float)
     if len(xy) < 2:
         return xy
@@ -505,10 +480,24 @@ def resample_polygon(
     polygon: Polygon,
     spacing: float,
 ) -> Polygon:
-    """
-    Resample the polygon: points spaced at least `spacing` apart along the
-    contour (exterior and interiors). Simple cumulative-distance +
-    interpolation method.
+    """Resample polygon boundaries at uniform arc-length spacing.
+
+    Parameters
+    ----------
+    polygon : shapely.geometry.Polygon
+        Polygon to resample (exterior and interior rings).
+    spacing : float
+        Target spacing between consecutive vertices along each ring.
+
+    Returns
+    -------
+    shapely.geometry.Polygon
+        Resampled polygon.
+
+    Raises
+    ------
+    ValueError
+        If ``spacing`` is not positive.
     """
     if spacing <= 0:
         raise ValueError("spacing must be positive")
@@ -537,49 +526,45 @@ def resample_polygon(
 
 
 def buffer_area(polygon: Polygon, area_factor: float) -> Polygon:
-    """
-    Buffer the polygon by a factor of its area divided by its length.
-    This is a heuristic to ensure that the buffer is proportional to the size of the polygon.
+    """Buffer a polygon by a distance proportional to its area-to-perimeter ratio.
 
     Parameters
     ----------
-    polygon : Polygon
-        The polygon to be buffered.
-    mas : float
-        The buffer factor.
+    polygon : shapely.geometry.Polygon
+        Polygon to buffer.
+    area_factor : float
+        Multiplier applied to ``polygon.area / polygon.length``.
 
     Returns
     -------
-    Polygon
-        The buffered polygon.
+    shapely.geometry.Polygon
+        Buffered polygon.
     """
 
     return polygon.buffer(area_factor * polygon.area / polygon.length)
 
 
 def polygon_to_node_edge(poly):
-    """
-    Extract node and edge arrays (PSLG format) from a Shapely Polygon or MultiPolygon.
-    Ensures all contours are closed and verifies even connectivity.
+    """Extract PSLG node and edge arrays from a Shapely polygon.
 
     Parameters
     ----------
-    poly : shapely.geometry.Polygon or MultiPolygon
+    poly : shapely.geometry.Polygon or shapely.geometry.MultiPolygon
         Input polygon geometry.
 
     Returns
     -------
-    node : ndarray (N, 2)
-        Node coordinates (x, y)
-    edge : ndarray (E, 2)
-        Edge connectivity (0-based indices)
+    node : ndarray of shape (N, 2)
+        Vertex coordinates ``(x, y)``.
+    edge : ndarray of shape (E, 2), dtype int
+        Edge connectivity (0-based vertex indices).
 
     Raises
     ------
     ValueError
-        If the resulting edge structure is not properly closed.
+        If any vertex has odd connectivity (open contour).
     """
-    # -----------------------handle MultiPolygon recursively
+    # Handle MultiPolygon recursively
     if poly.geom_type == "MultiPolygon":
         nodes_all, edges_all = [], []
         offset = 0
@@ -590,13 +575,11 @@ def polygon_to_node_edge(poly):
             offset += len(node)
         return np.vstack(nodes_all), np.vstack(edges_all)
 
-    # -----------------------extract exterior coordinates
     ext = np.array(poly.exterior.coords)
     node = [ext[:-1]]  # remove duplicate closing point
     edge = [np.column_stack([np.arange(len(ext) - 1), np.arange(1, len(ext))])]
     edge[-1][-1, 1] = 0  # close loop explicitly
 
-    # -----------------------extract holes (if any)
     for hole in poly.interiors:
         pts = np.array(hole.coords)
         n0 = len(np.vstack(node))
@@ -607,11 +590,9 @@ def polygon_to_node_edge(poly):
         e[-1, 1] = n0
         edge.append(e)
 
-    # -----------------------combine all
     node = np.vstack(node)
     edge = np.vstack(edge).astype(int)
 
-    # -----------------------verify closure condition
     nnod = node.shape[0]
     nadj = np.bincount(edge.ravel(), minlength=nnod)
     if np.any(nadj % 2 != 0):

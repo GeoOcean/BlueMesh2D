@@ -10,45 +10,37 @@ from .mesh_util.tricon import tricon
 
 
 def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg=[]):
-    """
-    Perform "hill-climbing" mesh smoothing for two-dimensional 2-simplex triangulations.
+    """Perform hill-climbing mesh smoothing for 2D triangle meshes.
 
-    [VERT, EDGE, TRIA, TNUM] = smooth(VERT, EDGE, TRIA, TNUM) returns a
-    "smoothed" triangulation {VERT, TRIA}, incorporating optimized vertex
-    coordinates and mesh topology.
+    Optimize vertex positions and local topology via a spring-based update
+    with monotonic quality guarantees.
 
     Parameters
     ----------
-    vert : ndarray of shape (V, 2)
-        XY coordinates of the vertices in the triangulation.
-    edge : ndarray of shape (E, 2)
-        Array of constrained edges.
-    tria : ndarray of shape (T, 3)
-        Array of triangles (vertex indices).
-    tnum : ndarray of shape (T, 1)
-        Array of part indices. Each row of TRIA and EDGE defines an element:
-        VERT[TRIA[ii, 0], :], VERT[TRIA[ii, 1], :], and VERT[TRIA[ii, 2], :]
-        are the coordinates of the ii-th triangle. The edges in EDGE are
-        defined similarly. TNUM[ii] gives the part index of the ii-th triangle.
+    vert : ndarray of shape (V, 2), optional
+        Vertex coordinates.
+    conn : ndarray of shape (E, 2), optional
+        Constrained edges.
+    tria : ndarray of shape (T, 3), optional
+        Triangle connectivity (vertex indices).
+    tnum : ndarray of shape (T, 1), optional
+        Part index per triangle.
     opts : dict, optional
-        Dictionary containing user-defined parameters:
-        - 'vtol' : float, default = 1.0e-2
-          Relative vertex movement tolerance. Smoothing converges when
-          (VNEW - VERT) <= VTOL * VLEN, where VLEN is a local length scale.
-        - 'iter' : int, default = 32
-          Maximum number of smoothing iterations.
-        - 'disp' : int or float, default = 4
-          Display frequency for iteration progress. Set to `np.inf` for quiet execution.
+        Smoothing options (defaults via :func:`makeopt`):
+
+        - ``vtol`` : float, default ``1.0e-2`` — relative vertex movement tolerance
+        - ``iter`` : int, default ``32`` — maximum iterations
+        - ``disp`` : int or float, default ``4`` — progress interval; ``np.inf`` for quiet
     hfun : callable, optional
-        Mesh-size function used for local edge-length control.
+        Mesh-size function for local edge-length control.
     harg : tuple, optional
-        Additional arguments passed to the mesh-size function `hfun`.
+        Extra arguments passed to ``hfun``.
 
     Returns
     -------
     vert : ndarray of shape (V, 2)
-        Updated vertex coordinates after smoothing.
-    edge : ndarray of shape (E, 2)
+        Smoothed vertex coordinates.
+    conn : ndarray of shape (E, 2)
         Updated constrained edges.
     tria : ndarray of shape (T, 3)
         Updated triangle connectivity.
@@ -57,17 +49,13 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
     Notes
     -----
-    - This routine is loosely based on the DISTMESH algorithm,
-      employing a spring-based analogy to redistribute mesh vertices.
-    - The method introduces a modified spring-based update with
-      additional hill-climbing element quality guarantees and
-      vertex density control.
-    - See: P.-O. Persson and G. Strang (2004),
-      "A Simple Mesh Generator in MATLAB", *SIAM Review* 46(2): 329–345.
+    Loosely based on the DISTMESH spring analogy with additional hill-climbing
+    quality and density control. See P.-O. Persson and G. Strang (2004),
+    *A Simple Mesh Generator in MATLAB*, SIAM Review 46(2): 329–345.
 
     References
     ----------
-    Translation of the MESH2D function `SMOOTH2` by Darren Engwirda.
+    Translation of the MESH2D function ``SMOOTH2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
@@ -84,17 +72,14 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
     opts = makeopt(opts)
 
-    # ---------------------------------------------- default CONN
     if conn.size == 0:
         edge, _ = tricon(tria)
         ebnd = edge[:, 3] < 1  # use boundary edge
         conn = edge[ebnd, 0:2]
 
-    # ---------------------------------------------- default TNUM
     if tnum.size == 0:
         tnum = np.ones((tria.shape[0], 1), dtype=int)
 
-    # ---------------------------------------------- basic checks
     if not (
         isinstance(vert, np.ndarray)
         and isinstance(conn, np.ndarray)
@@ -112,14 +97,12 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
     if np.min(tria[:, :3]) < 0 or np.max(tria[:, :3]) > nvrt:
         raise ValueError("smooth:invalidInputs - Invalid TRIA input array.")
 
-    # ---------------------------------------------- output title
     if not np.isinf(opts["disp"]):
         print("\n Smooth triangulation...\n")
         print(" -------------------------------------------------------")
         print("      |ITER.|          |MOVE(X)|          |DTRI(X)|     ")
         print(" -------------------------------------------------------")
 
-    # ---------------------------------------------- polygon bounds
     node = vert.copy()
     PSLG = conn.copy()
     pmax = int(np.max(tnum))
@@ -133,7 +116,6 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         same, _ = setset(PSLG, ecur[ebnd, 0:2])
         part[ppos] = np.where(same)[0]
 
-    # ---------------------------------------------- inflate bbox
     vmin = np.min(vert, axis=0)
     vmax = np.max(vert, axis=0)
 
@@ -152,7 +134,6 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
     vert = np.vstack((vert, vbox))
 
-    # ---------------------------------------------- DO MESH ITER
     tnow = time.time()
     tcpu = {
         "full": 0.0,
@@ -164,15 +145,12 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
     }
 
     for iter in range(int(opts["iter"])):
-        # ------------------------------------------ inflate adj.
         ttic = time.time()
         edge, tria = tricon(tria, conn)
         tcpu["tcon"] += time.time() - ttic
 
-        # ------------------------------------------ compute scr.
         oscr = triscr(vert, tria)
 
-        # ------------------------------------------ vert. iter's
         ttic = time.time()
         nvrt = vert.shape[0]
         nedg = edge.shape[0]
@@ -215,7 +193,6 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
             vert = vnew
 
         tcpu["iter"] += time.time() - ttic
-        # ------------------------------------------ hill-climber
         ttic = time.time()
 
         # unwind vert. upadte if score lower
@@ -258,7 +235,6 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         oscr = nscr
         tcpu["undo"] += time.time() - ttic
 
-        # ------------------------------------- test convergence!
         ttic = time.time()
 
         vdel = np.sum((vert - vold) ** 2, axis=1)
@@ -272,13 +248,11 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
         emid = 0.5 * (vert[edge[:, 0], :] + vert[edge[:, 1], :])
 
-        # ------------------------------------- |deg|-based prune
         keep = np.zeros(vert.shape[0], dtype=bool)
         keep[vdeg > 4] = True
         keep[conn.flatten()] = True
         keep[free.flatten()] = True
 
-        # ------------------------------------- 'density' control
         lmax = 5.0 / 4.0
         lmin = 1.0 / lmax
 
@@ -294,12 +268,10 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         less[ebad] = False
         more[ebad] = False
 
-        # ------------------------------------- force as disjoint
         lidx = np.where(less)[0]
         for epos in lidx:
             inod = edge[epos, 0]
             jnod = edge[epos, 1]
-            # --------------------------------- if still disjoint
             if keep[inod] and keep[jnod]:
                 keep[inod] = False
                 keep[jnod] = False
@@ -312,7 +284,6 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         more[indices] = False
         # more[ebad] = False
 
-        # ------------------------------------- reindex vert/tria
         redo = np.zeros(vert.shape[0], dtype=int)
         itop = np.count_nonzero(keep)
         iend = np.count_nonzero(less)
@@ -329,7 +300,6 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         okay = okay & (ttmp[:, 0] > 0)
         tnew = tnew[okay, :]
 
-        # ------------------------------------- quality preserver
         nscr = triscr(vnew, tnew)
 
         stol = 0.80
@@ -338,14 +308,12 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         vbad = np.zeros(vnew.shape[0], dtype=bool)
         vbad[tnew[tbad, :]] = True
 
-        # ------------------------------------- filter edge merge
         lidx = np.where(less)[0]
         ebad = vbad[redo[edge[lidx, 0]]] | vbad[redo[edge[lidx, 1]]]
 
         less[lidx[ebad]] = False
         keep[edge[lidx[ebad], 0:2].flatten()] = True
 
-        # ------------------------------------- reindex vert/conn
         redo = np.zeros(vert.shape[0], dtype=int)
         itop = np.count_nonzero(keep)
         iend = np.count_nonzero(less)
@@ -359,12 +327,10 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
         tcpu["keep"] += time.time() - ttic
 
-        # ------------------------------------- build current CDT
         ttic = time.time()
         vert, conn, tria, tnum = deltri(vert, conn, node, PSLG, part)
         tcpu["dtri"] += time.time() - ttic
 
-        # ------------------------------------- dump-out progress
         vdel = vdel / (hvrt.flatten() ** 2)
         move = vdel > opts["vtol"] ** 2
 
@@ -374,13 +340,11 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         if iter % opts["disp"] == 0:
             print(f"{iter:11d} {nmov:18d} {ntri:18d}")
 
-        # ------------------------------------- loop convergence!
         if nmov == 0:
             break
 
     tria = tria[:, 0:3]
 
-    # ----------------------------------------- prune unused vert
     keep = np.zeros(vert.shape[0], dtype=bool)
     keep[tria.flatten()] = True
     keep[conn.flatten()] = True
@@ -411,30 +375,29 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
 
 def evalhfn(vert, edge, EMAT, hfun=None, harg=[]):
-    """
-    Evaluate the mesh spacing function (spacing-function) at mesh vertices.
+    """Evaluate the mesh-size function at mesh vertices.
 
     Parameters
     ----------
     vert : ndarray of shape (N, 2)
-        XY coordinates of the mesh vertices.
+        Vertex coordinates.
     edge : ndarray of shape (E, 2)
-        Array of edge connections.
-    EMAT : ndarray or scipy.sparse matrix
+        Edge connectivity.
+    EMAT : scipy.sparse matrix
         Vertex–edge incidence matrix.
-    hfun : float, callable, or None
-        Mesh-size function or constant spacing value.
-    harg : tuple
-        Additional arguments passed to the mesh-size function `hfun`.
+    hfun : float, callable, or None, optional
+        Mesh-size function or constant spacing.
+    harg : tuple, optional
+        Extra arguments passed to ``hfun``.
 
     Returns
     -------
     hvrt : ndarray of shape (N,)
-        Mesh-size function values evaluated at the vertices.
+        Mesh-size value at each vertex.
 
     References
     ----------
-    Translation of the MESH2D function `EVALHFN` by Darren Engwirda.
+    Translation of the MESH2D function ``EVALHFN``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
@@ -474,29 +437,27 @@ def evalhfn(vert, edge, EMAT, hfun=None, harg=[]):
 
 
 def makeopt(opts=None):
-    """
-    Initialize the options structure for the `smooth` function.
+    """Set up and validate the options dictionary for :func:`smooth`.
 
     Parameters
     ----------
-    opts : dict or None
-        User-defined options dictionary. If None, a new dictionary is created.
+    opts : dict or None, optional
+        User options; if ``None``, start from an empty dict.
 
     Returns
     -------
     opts : dict
-        Options dictionary completed with default values for missing parameters.
+        Validated options dictionary.
 
     References
     ----------
-    Translation of the MESH2D function `MAKEOPT` by Darren Engwirda.
+    Translation of the MESH2D function ``MAKEOPT``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
     if opts is None:
         opts = {}
 
-    # --------------------------- ITER
     if "iter" not in opts:
         opts["iter"] = 32
     else:
@@ -512,7 +473,6 @@ def makeopt(opts=None):
         if opts["iter"] <= 0:
             raise ValueError("smooth:invalidOptionValues - Invalid OPT.ITER selection.")
 
-    # --------------------------- DISP
     if "disp" not in opts:
         opts["disp"] = 4
     else:
@@ -523,7 +483,6 @@ def makeopt(opts=None):
         if opts["disp"] <= 0:
             raise ValueError("smooth:invalidOptionValues - Invalid OPT.DISP selection.")
 
-    # --------------------------- VTOL
     if "vtol" not in opts:
         opts["vtol"] = 1.0e-2
     else:
@@ -534,7 +493,6 @@ def makeopt(opts=None):
         if opts["vtol"] <= 0:
             raise ValueError("smooth:invalidOptionValues - Invalid OPT.VTOL selection.")
 
-    # --------------------------- DBUG
     if "dbug" not in opts:
         opts["dbug"] = False
     else:

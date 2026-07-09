@@ -2,44 +2,29 @@ import numpy as np
 
 
 def inv_3x3(AA):
-    """
-    Compute the inverses for a block of 3×3 matrices.
+    """Compute determinant-scaled inverses for a block of 3×3 matrices.
 
-    This function computes the determinants and numerically robust "incomplete inverses"
-    for a collection of 3×3 matrices. The inverse matrices are scaled by their determinants
-    to improve numerical stability.
+    Returns ``det(A) * inv(A)`` for numerical robustness. Divide by ``DA``
+    when solving linear systems.
 
     Parameters
     ----------
     AA : ndarray of shape (3, 3, N)
-        Array containing N individual 3×3 matrices.
+        Stack of ``N`` individual 3×3 matrices.
 
     Returns
     -------
-    IA : ndarray of shape (3, 3, N)
-        Scaled inverses of each input matrix, such that:
-        `IA[:, :, k] = det(A[:, :, k]) * inv(A[:, :, k])`.
+    II : ndarray of shape (3, 3, N)
+        Determinant-scaled inverse of each matrix.
     DA : ndarray of shape (N,)
-        Determinants of each input matrix.
-
-    Notes
-    -----
-    - Each returned matrix `IA[:, :, k]` is an *incomplete inverse*,
-      scaled by its determinant to enhance numerical robustness.
-    - To solve a linear system `A * X = B`, compute `(IA * B) / DA`,
-      provided that `DA` is non-zero.
-
-    See Also
-    --------
-    inv_2x2 : Compute the same for 2×2 matrices.
+        Determinant of each matrix.
 
     References
     ----------
-    Translation of the MESH2D function `INV_3X3`.
+    Translation of the MESH2D function ``INV_3X3``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- basic checks
     if not isinstance(AA, np.ndarray):
         raise TypeError("inv_3x3:incorrectInputClass")
 
@@ -49,7 +34,6 @@ def inv_3x3(AA):
     if AA.shape[0] != 3 or AA.shape[1] != 3:
         raise ValueError("inv_3x3:incorrectDimensions")
 
-    # --------------------------------------------- build inv(A)
     II = np.zeros_like(AA)
     DA = det_3x3(AA)
 
@@ -69,16 +53,17 @@ def inv_3x3(AA):
 
 
 def det_3x3(AA):
-    """
-    Determinant for block of 3x3 matrices.
+    """Compute determinants for a block of 3×3 matrices.
 
     Parameters
     ----------
-    AA : (3,3,N) array
+    AA : ndarray of shape (3, 3, N)
+        Stack of ``N`` individual 3×3 matrices.
 
     Returns
     -------
-    DA : (N,) array
+    DA : ndarray of shape (N,)
+        Determinant of each matrix.
     """
     return (
         AA[0, 0, :] * (AA[1, 1, :] * AA[2, 2, :] - AA[1, 2, :] * AA[2, 1, :])

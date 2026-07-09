@@ -2,68 +2,36 @@ import numpy as np
 
 
 def loadmsh(name):
-    """
-    Load a `.MSH` file for JIGSAW.
-
-    This function reads a JIGSAW-formatted mesh file (`.MSH`) and returns
-    a structured dictionary representing the mesh data. The file may contain
-    various mesh types, including Euclidean meshes, ellipsoidal meshes,
-    and structured grids.
+    """Load a JIGSAW ``.MSH`` mesh file.
 
     Parameters
     ----------
     name : str
-        Path or base name of the `.MSH` file to load (without extension).
+        Path or base name of the ``.MSH`` file (without extension).
 
     Returns
     -------
     mesh : dict
-        Dictionary containing the mesh entities and metadata. The structure
-        depends on the mesh type (`mesh["MSHID"]`):
+        Mesh entities and metadata. Structure depends on ``mesh['mshID']``:
 
-        **If `mesh["MSHID"] == "EUCLIDEAN-MESH"`:**
-            - `POINT.COORD` : (NP, ND+1) ndarray
-              Point coordinates and IDs.
-            - `POINT.POWER` : (NP,) ndarray
-              Vertex weights for the dual “power” tessellation.
-            - `EDGE2.INDEX`, `TRIA3.INDEX`, `QUAD4.INDEX`, `TRIA4.INDEX`,
-              `HEXA8.INDEX`, `WEDG6.INDEX`, `PYRA5.INDEX` : ndarrays
-              Connectivity and IDs for 1D–3D mesh elements.
-            - `BOUND.INDEX` : (NB, 3) ndarray
-              Boundary-to-part associations and element type tags.
-            - `VALUE` : (NP, NV) ndarray
-              Scalar or vector values at mesh vertices.
-            - `SLOPE` : (NP,) ndarray
-              Gradient-limit values `||dh/dx||` used by the Eikonal solver `MARCHE`.
+        **``'EUCLIDEAN-MESH'`` or ``'ELLIPSOID-MESH'``:**
 
-        **If `mesh["MSHID"] == "ELLIPSOID-MESH"`:**
-            - `RADII` : (3,) ndarray
-              Principal ellipsoid radii.
-            - Additional fields as in `"EUCLIDEAN-MESH"` may also be included.
+        - ``point['coord']`` : ndarray of shape ``(NP, ND+1)``
+        - ``edge2``, ``tria3``, ``quad4``, etc. : dicts with ``'index'`` arrays
+        - ``value``, ``slope``, ``power`` : optional vertex data arrays
 
-        **If `mesh["MSHID"] == "EUCLIDEAN-GRID"` or `"ELLIPSOID-GRID"`:**
-            - `POINT.COORD` : list of ND arrays
-              Grid coordinates along each spatial axis.
-            - `VALUE` : (NM, NV) ndarray
-              Values at each grid vertex (`NM` = product of grid dimensions).
-            - `SLOPE` : (NM,) ndarray
-              Gradient-limits for each grid vertex.
+        **``'EUCLIDEAN-GRID'`` or ``'ELLIPSOID-GRID'``:**
+
+        - ``point['coord']`` : list of per-axis coordinate arrays
+        - ``value``, ``slope`` : gridded vertex data
 
     Notes
     -----
-    - This function automatically detects the mesh type from the file header.
-    - Optional entities are only loaded if present in the `.MSH` file.
-    - `BOUND.INDEX` defines part boundaries and topology using internal
-      constants from the JIGSAW `LIBDATA` specification.
-
-    See Also
-    --------
-    jigsaw : Run JIGSAW mesh generator.
-    savemsh : Save mesh data to a `.MSH` file.
+    Optional entities are loaded only when present in the file.
 
     References
     ----------
-    Translation of the MESH2D function `loadmsh`.
+    Translation of the MESH2D function ``loadmsh``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 

@@ -2,44 +2,29 @@ import numpy as np
 
 
 def inv_2x2(AA):
-    """
-    Compute the inverses for a block of 2×2 matrices.
+    """Compute determinant-scaled inverses for a block of 2×2 matrices.
 
-    This function computes the determinants and numerically robust "incomplete inverses"
-    for a collection of 2×2 matrices. The inverse matrices are scaled by their determinants
-    to improve numerical stability.
+    Returns ``det(A) * inv(A)`` for numerical robustness. Divide by ``DA``
+    when solving linear systems.
 
     Parameters
     ----------
     AA : ndarray of shape (2, 2, N)
-        Array containing N individual 2×2 matrices.
+        Stack of ``N`` individual 2×2 matrices.
 
     Returns
     -------
-    IA : ndarray of shape (2, 2, N)
-        Scaled inverses of each input matrix, such that:
-        `IA[:, :, k] = det(A[:, :, k]) * inv(A[:, :, k])`.
+    II : ndarray of shape (2, 2, N)
+        Determinant-scaled inverse of each matrix.
     DA : ndarray of shape (N,)
-        Determinants of each input matrix.
-
-    Notes
-    -----
-    - Each returned matrix `IA[:, :, k]` is an *incomplete inverse*,
-      scaled by its determinant to improve numerical robustness.
-    - To solve a linear system `A * X = B`, compute `(IA * B) / DA`,
-      provided that `DA` is non-zero.
-
-    See Also
-    --------
-    inv_3x3 : Compute the same for 3×3 matrices.
+        Determinant of each matrix.
 
     References
     ----------
-    Translation of the MESH2D function `INV_2X2`.
+    Translation of the MESH2D function ``INV_2X2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- basic checks
     if not isinstance(AA, np.ndarray):
         raise TypeError("inv_2x2:incorrectInputClass")
 
@@ -49,7 +34,6 @@ def inv_2x2(AA):
     if AA.shape[0] != 2 or AA.shape[1] != 2:
         raise ValueError("inv_2x2:incorrectDimensions")
 
-    # ---------------------------------------------- build inv(A)
     II = np.zeros_like(AA)
     DA = det_2x2(AA)
 
@@ -62,15 +46,16 @@ def inv_2x2(AA):
 
 
 def det_2x2(AA):
-    """
-    Determinant for block of 2x2 matrices.
+    """Compute determinants for a block of 2×2 matrices.
 
     Parameters
     ----------
-    AA : (2,2,N) array
+    AA : ndarray of shape (2, 2, N)
+        Stack of ``N`` individual 2×2 matrices.
 
     Returns
     -------
-    DA : (N,) array
+    DA : ndarray of shape (N,)
+        Determinant of each matrix.
     """
     return AA[0, 0, :] * AA[1, 1, :] - AA[0, 1, :] * AA[1, 0, :]

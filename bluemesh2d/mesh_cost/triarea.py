@@ -2,40 +2,28 @@ import numpy as np
 
 
 def triarea(pp, tt):
-    """
-    Compute the signed areas of triangles for a 2-simplex triangulation
-    embedded in the two-dimensional plane.
+    """Compute signed triangle areas.
 
-    This function calculates the signed area of each triangle in the triangulation.
-    The sign of the area indicates the orientation of the triangle
-    (positive for counter-clockwise vertex ordering, negative for clockwise).
+    Positive area indicates counter-clockwise vertex ordering in 2D.
 
     Parameters
     ----------
-    VERT : ndarray of shape (V, 2)
-        Coordinates of the vertices in the triangulation.
-    TRIA : ndarray of shape (T, 3)
-        Array of triangle vertex indices defining the 2-simplexes.
+    pp : ndarray of shape (V, 2) or (V, 3)
+        Vertex coordinates.
+    tt : ndarray of shape (T, 3)
+        Triangle connectivity.
 
     Returns
     -------
-    AREA : ndarray of shape (T,)
-        Signed areas of each triangle. Positive values correspond to
-        counter-clockwise orientation.
-
-    Notes
-    -----
-    - The computed area is equal to half the magnitude of the cross product
-      between two triangle edges.
-    - Useful for verifying mesh orientation and computing geometric properties.
+    area : ndarray of shape (T,)
+        Signed triangle areas (2D) or Euclidean areas (3D).
 
     References
     ----------
-    Translation of the MESH2D function `TRIAREA`.
+    Translation of the MESH2D function ``TRIAREA``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- basic checks
     if not (isinstance(pp, np.ndarray) and isinstance(tt, np.ndarray)):
         raise TypeError("triarea:incorrectInputClass")
 
@@ -47,7 +35,6 @@ def triarea(pp, tt):
     nnod = pp.shape[0]
     if np.min(tt[:, :3]) < 0 or np.max(tt[:, :3]) >= nnod:
         raise ValueError("triarea:invalidInputs")
-    # --------------------------------------- compute signed area
     ev12 = pp[tt[:, 1], :] - pp[tt[:, 0], :]
     ev13 = pp[tt[:, 2], :] - pp[tt[:, 0], :]
 

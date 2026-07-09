@@ -7,16 +7,7 @@ DEFAULT_REQUIRE_STRICT_DUAL: bool = True
 
 
 def _ortho_merge_pipeline(vert, conn, tria, tnum, opts):
-    """
-    Repeatedly orthogonalize (on a merge-consistent triangle proxy: quad
-    diagonal ``(v1,v2)``, not fan-from-``a``), then run ``merge_circumcenters``
-    to remove remaining small flow links by converting triangle pairs into
-    quads.
-
-    When ``require_both_criteria`` is False (default), the fan-proxy dual
-    criteria / recovery cycles are skipped. Set it True to require them (see
-    :mod:`bluemesh2d.ortho_merge.ortho_merge_iter`).
-    """
+    """Run repeated orthogonalize and merge_circumcenters cycles on a triangle mesh."""
     from .ortho_merge.ortho_merge_iter import ortho_merge_iterate_tria, print_stats
 
     vert_in = np.asarray(vert, dtype=np.float64)
@@ -280,91 +271,61 @@ def _ortho_merge_pipeline(vert, conn, tria, tnum, opts):
 
 
 def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg=[]):
-    """
-    Perform mesh smoothing with orthogonalization.
+    """Smooth a mesh with orthogonalization for flow simulations.
 
-    This function combines orthogonalization (optimizing aspect ratios) with
-    smoothing (optimizing internal angles) to improve mesh quality for flow
-    simulations.
+    Combine orthogonalization (aspect-ratio control) with hill-climbing
+    smoothing (angle optimization) via the ortho-merge pipeline.
 
     Parameters
     ----------
-    vert : ndarray of shape (V, 2)
-        XY coordinates of the vertices in the triangulation.
-    conn : ndarray of shape (E, 2)
-        Array of constrained edges.
-    tria : ndarray of shape (T, 3)
-        Array of triangles (vertex indices).
-    tnum : ndarray of shape (T, 1)
-        Array of part indices.
+    vert : ndarray of shape (V, 2), optional
+        Vertex coordinates.
+    conn : ndarray of shape (E, 2), optional
+        Constrained edges.
+    tria : ndarray of shape (T, 3), optional
+        Triangle connectivity.
+    tnum : ndarray of shape (T, 1), optional
+        Part index per triangle.
     opts : dict, optional
-        Dictionary containing user-defined parameters:
-        - 'vtol' : float, default = 1.0e-3
-          Relative vertex movement tolerance.
-        - 'iter' : int, default = 16
-          Maximum number of outer iterations.
-        - 'inner_iter' : int, default = 4
-          Number of inner iterations per outer iteration.
-        - 'ortho_factor' : float, default = 0.5
-          Maximum orthogonalization to smoothing factor (0.0 = pure smoothing, 1.0 = pure orthogonalization).
-          The actual factor starts small and increases progressively during iterations (like Delft3D's mu).
-        - 'relaxation' : float, default = 0.75
-          Relaxation factor for coordinate updates.
-        - 'orthogonality_threshold' : float, default = 0.49
-          Passed to the triangle orthogonalizer (max allowed |cos φ| on internal flow links).
-        - 'smalllink_threshold' : float, default = 0.11
-          Threshold for small flow links (``removesmalllinkstrsh`` in merge / meshkernel checks).
-        - 'require_both_criteria' : bool, default = False
-          If True, after the main ortho-merge cycles, require dual criteria on the merge-consistent
-          triangle proxy and run recovery (may raise ``RuntimeError``). *Not* a threshold — use
-          ``smalllink_threshold`` for that.
-        - 'enforce_output_dual_criteria' : bool, default = require_both_criteria
-          After building final triangle connectivity, run a short strict recovery so output triangles
-          satisfy the dual criteria more reliably.
-        - 'post_output_ortho_iter' : int, default = 3
-          Maximum short post-recovery cycles used by ``enforce_output_dual_criteria``.
-        - 'max_recovery_iterations' : int, default = 25
-          Extra ortho+merge cycles when ``require_both_criteria`` is True and checks fail.
-        - 'recovery_stagnation_break' : int, default = 3
-          Stop recovery when ``(max|cosφ|, n_small)`` is unchanged for this many consecutive
-          recovery cycles (0 = disabled). Still raises if criteria are unmet.
-        - 'preserve_merged_quads' : bool, default = False
-          If True, store mixed face-node rows on ``opts['_mixed_face_nodes_0b']`` for UGRID export.
-        - 'spherical' : bool, default = True
-          If True, ``vert`` is treated as lon/lat degrees and all orthogonality/small-link
-          geometry uses the Delft3D spherical (jsferic=1) formulas. Set False for a mesh
-          already in a projected planar CRS (metres); geometry then uses plain 2D
-          (jsferic=0) distances and circumcenters.
-        - 'merge_small_links' : bool, default = True
-          If True (default), remaining small flow links are removed by merging each
-          triangle pair into a quad (``merge_circumcenters``). If False, the mesh stays
-          pure triangles throughout: small links are cleared by quality-guarded edge
-          flips and circumcenter-separation node movement, targeting the same dual
-          criteria. Usually harder to satisfy — some small links may only be removable
-          by a merge.
-        - 'disp' : int or float, default = 4
-          Display frequency for iteration progress. Set to `np.inf` for quiet execution.
+        Pipeline options (defaults via :func:`makeopt_smood`):
+
+        - ``vtol`` : float, default ``1.0e-3`` — vertex movement tolerance
+        - ``iter`` : int, default ``4`` — outer ortho/merge cycles
+        - ``inner_iter`` : int, default ``4`` — inner iterations per cycle
+        - ``ortho_factor`` : float, default ``0.5`` — ortho vs. smooth blend
+        - ``relaxation`` : float, default ``0.75`` — coordinate update relaxation
+        - ``orthogonality_threshold`` : float, default ``0.49`` — max ``|cos φ|``
+        - ``smalllink_threshold`` : float, default ``0.11`` — small flow-link threshold
+        - ``require_both_criteria`` : bool, default ``False`` — enforce dual criteria
+        - ``enforce_output_dual_criteria`` : bool — post-pass on final triangles
+        - ``post_output_ortho_iter`` : int, default ``3`` — post-recovery cycles
+        - ``max_recovery_iterations`` : int, default ``100`` — recovery cycle cap
+        - ``recovery_stagnation_break`` : int, default ``10`` — stagnation stop
+        - ``preserve_merged_quads`` : bool, default ``False`` — keep quad faces
+        - ``spherical`` : bool, default ``False`` — lon/lat vs. planar geometry
+        - ``merge_small_links`` : bool, default ``False`` — merge vs. flip-only mode
+        - ``disp`` : int or float, default ``4`` — progress interval; ``np.inf`` for quiet
     hfun : callable, optional
-        Mesh-size function used for local edge-length control.
+        Mesh-size function (reserved for future use).
     harg : tuple, optional
-        Additional arguments passed to the mesh-size function `hfun`.
+        Extra arguments for ``hfun``.
 
     Returns
     -------
     vert : ndarray of shape (V, 2)
-        Updated vertex coordinates after smoothing.
+        Updated vertex coordinates.
     conn : ndarray of shape (E, 2)
         Updated constrained edges.
     tria : ndarray of shape (T, 3)
-        Updated triangle connectivity.
+        Updated triangle connectivity (or mixed face rows if quads preserved).
     tnum : ndarray of shape (T, 1)
         Updated part indices.
 
     Notes
     -----
-    Delegates to :mod:`bluemesh2d.ortho_merge.ortho_merge_iter` (orthogonalize on a
-    merge-consistent triangle proxy, then ``merge_circumcenters``). See MeshKernel /
-    Delft3D-FM references in :mod:`bluemesh2d.ortho_merge.orthogonalize`.
+    Delegates to :mod:`bluemesh2d.ortho_merge.ortho_merge_iter`. See
+    :mod:`bluemesh2d.ortho_merge.orthogonalize` for MeshKernel / Delft3D-FM
+    references.
     """
 
     if vert is None:
@@ -380,17 +341,14 @@ def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg
 
     opts = makeopt_smood(opts)
 
-    # ---------------------------------------------- default CONN
     if conn.size == 0:
         edge, _ = tricon(tria)
         ebnd = edge[:, 3] < 1  # use boundary edge
         conn = edge[ebnd, 0:2]
 
-    # ---------------------------------------------- default TNUM
     if tnum.size == 0:
         tnum = np.ones((tria.shape[0], 1), dtype=int)
 
-    # ---------------------------------------------- basic checks
     if not (
         isinstance(vert, np.ndarray)
         and isinstance(conn, np.ndarray)
@@ -408,7 +366,6 @@ def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg
     if np.min(tria[:, :3]) < 0 or np.max(tria[:, :3]) > nvrt:
         raise ValueError("smood:invalidInputs - Invalid TRIA input array.")
 
-    # ---------------------------------------------- output title
     if not np.isinf(opts["disp"]):
         print("\n Smooth triangulation for Delft3D-FM computation...\n")
 
@@ -416,23 +373,21 @@ def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg
 
 
 def makeopt_smood(opts=None):
-    """
-    Initialize the options structure for the `smood` function.
+    """Set up and validate the options dictionary for :func:`smood`.
 
     Parameters
     ----------
-    opts : dict or None
-        User-defined options dictionary. If None, a new dictionary is created.
+    opts : dict or None, optional
+        User options; if ``None``, start from an empty dict.
 
     Returns
     -------
     opts : dict
-        Options dictionary completed with default values for missing parameters.
+        Validated options dictionary.
     """
     if opts is None:
         opts = {}
 
-    # --------------------------- ITER
     if "iter" not in opts:
         # Default pipeline: 4 ortho <-> merge outer cycles.
         opts["iter"] = 4
@@ -442,7 +397,6 @@ def makeopt_smood(opts=None):
         if opts["iter"] <= 0:
             raise ValueError("smood:invalidOptionValues - Invalid OPT.ITER selection.")
 
-    # --------------------------- INNER_ITER
     if "inner_iter" not in opts:
         opts["inner_iter"] = 4
     else:
@@ -453,7 +407,6 @@ def makeopt_smood(opts=None):
                 "smood:invalidOptionValues - Invalid OPT.INNER_ITER selection."
             )
 
-    # --------------------------- ORTHO_FACTOR
     if "ortho_factor" not in opts:
         opts["ortho_factor"] = 0.5
     else:
@@ -464,7 +417,6 @@ def makeopt_smood(opts=None):
                 "smood:invalidOptionValues - ORTHO_FACTOR must be in [0, 1]."
             )
 
-    # --------------------------- RELAXATION
     if "relaxation" not in opts:
         opts["relaxation"] = 0.75
     else:
@@ -475,7 +427,6 @@ def makeopt_smood(opts=None):
                 "smood:invalidOptionValues - RELAXATION must be in (0, 1]."
             )
 
-    # --------------------------- DISP
     if "disp" not in opts:
         opts["disp"] = 8
     else:
@@ -484,7 +435,6 @@ def makeopt_smood(opts=None):
         if opts["disp"] <= 0:
             raise ValueError("smood:invalidOptionValues - Invalid OPT.DISP selection.")
 
-    # --------------------------- VTOL
     if "vtol" not in opts:
         opts["vtol"] = 1.0e-3
     else:
@@ -493,14 +443,12 @@ def makeopt_smood(opts=None):
         if opts["vtol"] <= 0:
             raise ValueError("smood:invalidOptionValues - Invalid OPT.VTOL selection.")
 
-    # --------------------------- DBUG
     if "dbug" not in opts:
         opts["dbug"] = False
     else:
         if not isinstance(opts["dbug"], bool):
             raise TypeError("smood:incorrectInputClass - Incorrect input class.")
 
-    # --------------------------- ORTHOGONALITY_THRESHOLD
     if "orthogonality_threshold" not in opts:
         opts["orthogonality_threshold"] = 0.49  # max|cosphi|
     else:
@@ -511,7 +459,6 @@ def makeopt_smood(opts=None):
                 "smood:invalidOptionValues - ORTHOGONALITY_THRESHOLD must be in [0, 1]."
             )
 
-    # --------------------------- SMALLLINK_THRESHOLD
     if "smalllink_threshold" not in opts:
         opts["smalllink_threshold"] = DEFAULT_SMALLLINK_THRESHOLD
     else:
@@ -519,7 +466,6 @@ def makeopt_smood(opts=None):
             raise TypeError("smood:incorrectInputClass - Incorrect input class.")
         opts["smalllink_threshold"] = float(opts["smalllink_threshold"])
 
-    # --------------------------- BUFFER_LAYERS
     if "buffer_layers" not in opts:
         opts["buffer_layers"] = 2
     else:
@@ -529,14 +475,12 @@ def makeopt_smood(opts=None):
         if opts["buffer_layers"] <= 0:
             raise ValueError("smood:invalidOptionValues - buffer_layers must be > 0.")
 
-    # --------------------------- ENABLE_EDGE_FLIPS
     if "enable_edge_flips" not in opts:
         opts["enable_edge_flips"] = True
     else:
         if not isinstance(opts["enable_edge_flips"], bool):
             raise TypeError("smood:incorrectInputClass - Incorrect input class.")
 
-    # --------------------------- MAX_GLOBAL_ITER / SMOOTH_ITER
     if "max_global_iter" not in opts:
         opts["max_global_iter"] = int(opts["inner_iter"]) + 2
     else:
@@ -555,14 +499,13 @@ def makeopt_smood(opts=None):
         if opts["smooth_iter"] <= 0:
             raise ValueError("smood:invalidOptionValues - smooth_iter must be > 0.")
 
-    # --------------------------- STOP_IF_NO_MERGE
     if "stop_if_no_merge" not in opts:
         opts["stop_if_no_merge"] = False
     else:
         if not isinstance(opts["stop_if_no_merge"], bool):
             raise TypeError("smood:incorrectInputClass - Incorrect input class.")
 
-    # --------------------------- REQUIRE_BOTH_CRITERIA (fan-proxy dual check + recovery)
+    # REQUIRE_BOTH_CRITERIA (fan-proxy dual check + recovery)
     if "require_both_criteria" not in opts:
         opts["require_both_criteria"] = DEFAULT_REQUIRE_STRICT_DUAL
     else:
@@ -649,14 +592,12 @@ def makeopt_smood(opts=None):
         if not isinstance(opts["preserve_merged_quads"], bool):
             raise TypeError("smood:incorrectInputClass - Incorrect input class.")
 
-    # --------------------------- SPHERICAL
     if "spherical" not in opts:
         opts["spherical"] = False
     else:
         if not isinstance(opts["spherical"], bool):
             raise TypeError("smood:incorrectInputClass - spherical must be bool.")
 
-    # --------------------------- MERGE_SMALL_LINKS
     if "merge_small_links" not in opts:
         opts["merge_small_links"] = False
     else:

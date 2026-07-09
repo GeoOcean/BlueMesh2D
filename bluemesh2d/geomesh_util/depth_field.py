@@ -17,37 +17,34 @@ def _check_method(method):
     return method
 
 def depth_field_from_dat(x, y, z, input_crs, output_crs, method="linear"):
-    """
-    Create a callable depth field from a .dat file containing x y z points.
-    No projection handling — assumes all coordinates are in the same system.
+    """Build a callable depth field from scattered x-y-z points.
 
     Parameters
     ----------
-    x, y, z : ndarray
-        1D arrays of point coordinates and depth values.
+    x, y, z : ndarray of shape (N,)
+        Point coordinates and depth/elevation values.
     input_crs : str or pyproj.CRS
-        CRS of the input coordinates (e.g. UTM zone). Default 'EPSG:32630'.
+        CRS of the input coordinates.
     output_crs : str or pyproj.CRS
-        CRS in which the depth field will be queried (e.g. 'EPSG:32630' for UTM zone 30N).
+        CRS in which the returned depth field is queried.
     method : {'linear', 'nearest'}, optional
-        Interpolation method to use (default 'linear')
-    delimiter : str, optional
-        Delimiter used in the .dat file (default: auto-detected by numpy)
+        Interpolation method. Default is ``'linear'``.
 
     Returns
     -------
-    depth_field : function
-        Callable: depth_field(xy) -> interpolated depth values (m)
-        where xy is an array of shape (N, 2) with [x, y] coordinates.
+    depth_field : callable
+        ``depth_field(xy)`` returns interpolated depth values (m) for ``xy`` of
+        shape ``(M, 2)`` in ``output_crs``. Exposes ``.bounds`` in
+        ``output_crs``.
     """
 
     _check_method(method)
 
-    # --- Clean invalid values
+    # Clean invalid values
     mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
     x, y, z = x[mask], y[mask], z[mask]
 
-    # --- Create interpolator
+    # Create interpolator
     if method == "linear":
         interp = LinearNDInterpolator(list(zip(x, y)), z, fill_value=np.nan)
     else:  # nearest
@@ -57,12 +54,9 @@ def depth_field_from_dat(x, y, z, input_crs, output_crs, method="linear"):
     output_crs = pyproj.CRS.from_user_input(output_crs)
     transformer = pyproj.Transformer.from_crs(output_crs, input_crs, always_xy=True)
 
-    # --- Closure function
+    # Closure function
     def depth_field(xy):
-        """
-        Returns interpolated depth (z) for given (x, y) coordinates.
-        xy : (N, 2) array
-        """
+        """Evaluate interpolated depth at query coordinates."""
         xs, ys = xy[:, 0], xy[:, 1]
         xs, ys = transformer.transform(xs, ys)
         depth = -interp(xs, ys)
@@ -79,23 +73,25 @@ def depth_field_from_dat(x, y, z, input_crs, output_crs, method="linear"):
 
 
 def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear"):
-    """
-    Create a callable depth field from a GeoTIFF bathymetry file.
+    """Build a callable depth field from a bathymetry GeoTIFF.
 
     Parameters
     ----------
     tiff_path : str
         Path to the bathymetry GeoTIFF file.
     output_crs : str or pyproj.CRS
-        CRS of the coordinates passed to the returned depth field (e.g. UTM).
+        CRS of coordinates passed to the returned depth field.
+    raster_crs : str or pyproj.CRS, optional
+        CRS of the raster. If ``None``, taken from the GeoTIFF metadata.
     method : {'linear', 'nearest'}, optional
-        'linear': bilinear interpolation (default, smoother, better for hfun).
-        'nearest': nearest pixel (fast, piecewise-constant).
+        ``'linear'`` for bilinear interpolation; ``'nearest'`` for nearest pixel.
+        Default is ``'linear'``.
 
     Returns
     -------
     depth_field : callable
-        depth_field(xy) -> depth (m), xy shape (N, 2) in output_crs.
+        ``depth_field(xy)`` returns depth (m) for ``xy`` of shape ``(N, 2)`` in
+        ``output_crs``. Exposes ``.bounds`` in ``output_crs``.
     """
 
     _check_method(method)
@@ -166,34 +162,31 @@ def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear")
 
 def depth_field_from_xr(ds, input_crs, output_crs, x_name='lon', y_name='lat',
                         z_name="elevation", method="linear"):
-    """
-    Create a callable depth field from an xarray.Dataset (bathymetry grid),
-    reprojecting coordinates from dataset CRS to the desired output CRS.
+    """Build a callable depth field from an xarray bathymetry dataset.
 
     Parameters
     ----------
     ds : xarray.Dataset
-        Dataset containing bathymetry (e.g. GEBCO subset) with coordinates (lat, lon).
+        Bathymetry dataset (e.g. GEBCO subset).
     input_crs : str or pyproj.CRS
-        CRS of the dataset coordinates (e.g. 'EPSG:4326' for lat/lon).
+        CRS of the dataset coordinates.
     output_crs : str or pyproj.CRS
-        CRS in which the depth field will be queried (e.g. 'EPSG:32630' for UTM zone 30N).
+        CRS in which the depth field is queried.
     x_name, y_name, z_name : str, optional
-        Names of the longitude, latitude and elevation variables in ``ds``.
+        Names of longitude, latitude, and elevation variables in ``ds``.
     method : {'linear', 'nearest'}, optional
-        'linear': bilinear interpolation on the grid (default, smoother).
-        'nearest': nearest grid node (fast, piecewise-constant).
+        Grid interpolation method. Default is ``'linear'``.
 
     Returns
     -------
-    depth_field : function
-        Callable: depth_field(xy) -> depth values (m)
-        where xy is an array of shape (N, 2) with [x, y] coordinates in `output_crs`.
+    depth_field : callable
+        ``depth_field(xy)`` returns depth values (m) for ``xy`` of shape
+        ``(N, 2)`` in ``output_crs``. Exposes ``.bounds`` in ``output_crs``.
     """
 
     _check_method(method)
 
-    # -----------------------extract lon/lat grid and data (z assumed [lat, lon])
+    # Extract lon/lat grid and data (z assumed [lat, lon])
     lon = np.asarray(ds[x_name].values, dtype=float)
     lat = np.asarray(ds[y_name].values, dtype=float)
     z = np.asarray(ds[z_name].values, dtype=float)
@@ -210,17 +203,12 @@ def depth_field_from_xr(ds, input_crs, output_crs, x_name='lon', y_name='lat',
         (lat, lon), z, method=method, bounds_error=False, fill_value=np.nan
     )
 
-    # -----------------------prepare transformers
     input_crs = pyproj.CRS.from_user_input(input_crs)
     output_crs = pyproj.CRS.from_user_input(output_crs)
     to_ds = pyproj.Transformer.from_crs(output_crs, input_crs, always_xy=True)
 
-    # -----------------------closure function
     def depth_field(xy):
-        """
-        Returns interpolated depth at given coordinates.
-        xy : (N, 2) array in output_crs (e.g., UTM)
-        """
+        """Evaluate interpolated depth at query coordinates."""
         xs, ys = xy[:, 0], xy[:, 1]
         lon_q, lat_q = to_ds.transform(xs, ys)
         # depth = -elevation; interpolator expects (lat, lon) order

@@ -2,24 +2,27 @@ import numpy as np
 
 
 def hfun_wavenumhunt(test, depth_field, T, N, zmin, hmin):
-    """
-    HFUN_WAVENUMHUNT : mesh-size function based on local wavelength.
+    """Build a mesh-size function from local wavelength.
 
     Parameters
     ----------
-    test : (N,2) array
-        Coordinates where to evaluate hfun.
-    depth_field : callable or array
-        Depth at each (x, y). Can be a constant or interpolated field.
+    test : ndarray of shape (N, 2)
+        Coordinates where the mesh size is evaluated.
+    depth_field : callable or array_like
+        Water depth at each query point; a scalar or length-``N`` array.
     T : float
-        Wave period (s).
+        Wave period in seconds.
     N : int
-        Number of cells per wavelength.
+        Target number of cells per wavelength.
+    zmin : float
+        Minimum water depth used in the dispersion relation.
+    hmin : float
+        Minimum allowed mesh size.
 
     Returns
     -------
-    hfun : (N,) array
-        Target cell size at each input point.
+    hfun : ndarray of shape (N,)
+        Target cell size at each query point.
     """
     # Determine local depth
     if callable(depth_field):
@@ -45,22 +48,21 @@ def hfun_wavenumhunt(test, depth_field, T, N, zmin, hmin):
 
 
 def wavenumhunt(T, h):
-    """
-    Compute wavelength (L) and wavenumber (k) using Hunt (1979) approximation.
+    """Compute wavelength and wavenumber via the Hunt (1979) approximation.
 
     Parameters
     ----------
     T : float or array_like
-        Wave period [s]
+        Wave period in seconds.
     h : float or array_like
-        Water depth [m]
+        Water depth in metres.
 
     Returns
     -------
     L : float or ndarray
-        Wavelength [m]
+        Wavelength in metres.
     k : float or ndarray
-        Wavenumber [1/m]
+        Wavenumber in 1/m.
     """
     D = np.array(
         [

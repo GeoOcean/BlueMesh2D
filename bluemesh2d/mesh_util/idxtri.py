@@ -4,42 +4,26 @@ from ..aabb_tree.maketree import maketree
 
 
 def idxtri(vert, tria):
-    """
-    IDXTRI : create a spatial-indexing structure for a 2-simplex triangulation in 2D.
-
-    [tree] = idxtri(vert, tria) builds an Axis-Aligned Bounding Box (AABB) tree
-    designed to accelerate spatial queries within a triangulation defined by
-    {vert, tria}.
+    """Build an AABB tree over the triangles of a 2D triangulation.
 
     Parameters
     ----------
-    vert : ndarray (V, 2)
-        Array of XY coordinates of the triangulation vertices.
-    tria : ndarray (T, 3)
-        Array of vertex indices defining each triangle. Each row defines one
-        triangle such that:
-        `vert[tria[ii, 0], :]`, `vert[tria[ii, 1], :]`, and `vert[tria[ii, 2], :]`
-        are the coordinates of the ii-th triangle.
+    vert : ndarray of shape (V, 2)
+        Vertex coordinates.
+    tria : ndarray of shape (T, 3)
+        Triangle connectivity.
 
     Returns
     -------
-    tree : dict or object
-        A spatial AABB-tree indexing the triangles of the mesh, useful for
-        efficient point-location and intersection queries.
-
-    See Also
-    --------
-    trihfn : evaluate a mesh-size function on a triangulation.
-    lfshfn : compute local feature-size estimates.
-    maketree : build an AABB tree for general rectangular bounds.
+    tree
+        AABB tree from :func:`maketree` indexing triangle bounding boxes.
 
     References
     ----------
-    Translation of the MESH2D function `IDXTRI2`.
+    Translation of the MESH2D function ``IDXTRI2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # --------------------------------------------- basic checks
     if not (isinstance(vert, np.ndarray) and isinstance(tria, np.ndarray)):
         raise TypeError("idxtri:incorrectInputClass")
 
@@ -53,7 +37,6 @@ def idxtri(vert, tria):
     if np.min(tria[:, :3]) < 0 or np.max(tria[:, :3]) >= nvrt:
         raise ValueError("idxtri:invalidInputs")
 
-    # ------------------------------ calc. AABB indexing for TRIA
     bmin = vert[tria[:, 0], :].copy()
     bmax = vert[tria[:, 0], :].copy()
 
@@ -61,11 +44,10 @@ def idxtri(vert, tria):
         bmin = np.minimum(bmin, vert[tria[:, ii], :])
         bmax = np.maximum(bmax, vert[tria[:, ii], :])
 
-    # ------------------------------ opts (MATLAB/Octave specific, we mimic)
+    # Opts (MATLAB/Octave specific, we mimic)
     opts = {}
     opts["nobj"] = 16
 
-    # ------------------------------ build tree (dummy version)
     tree = maketree(np.hstack([bmin, bmax]), opts)
 
     return tree

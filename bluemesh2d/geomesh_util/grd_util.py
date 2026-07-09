@@ -29,17 +29,24 @@ def _signed_area_tri_xy(xy: np.ndarray, i: int, j: int, k: int) -> float:
 def triangulate_mixed_face_row_to_tris(
     node_xy: np.ndarray, nodes_valid: np.ndarray
 ) -> list[tuple[int, int, int]]:
-    """
-    Build triangle connectivity for one polygon face (valid node indices only).
+    """Triangulate one mixed polygon face (3, 4, or more vertices).
 
-    - 3 nodes: one triangle.
-    - 4 nodes: ``merge_circumcenters`` stores quads as ``[a, v1, b, v2]`` where
-      ``(v1, v2)`` was the merged small-link edge. Triangulate by splitting along
-      that diagonal: ``(a, v1, v2)`` and ``(b, …)`` with winding chosen so both
-      triangles have the same signed area sign as the quad half (Delft3D-FM dual
-      geometry is consistent with this choice; fan-from-``a`` uses diagonal ``(a, v2)``
-      and can yield ``|cosφ| → 1`` on export).
-    - 5+ nodes: fan around the first node.
+    Three-node faces yield one triangle. Four-node faces (quads stored as
+    ``[a, v1, b, v2]`` from ``merge_circumcenters``) split along the merged
+    diagonal ``(v1, v2)``. Faces with five or more nodes are fanned from the
+    first vertex.
+
+    Parameters
+    ----------
+    node_xy : ndarray of shape (N, 2)
+        Mesh node coordinates.
+    nodes_valid : ndarray
+        0-based vertex indices for one face (length 3, 4, or more).
+
+    Returns
+    -------
+    list of tuple of int
+        Triangle connectivity as ``(i, j, k)`` tuples.
     """
     nodes = np.asarray(nodes_valid, dtype=np.int64).reshape(-1)
     n = int(nodes.size)
@@ -74,9 +81,17 @@ def triangulate_mixed_face_row_to_tris(
 
 
 def face_nodes_0b_to_faces_list(face_nodes_0b: np.ndarray) -> list:
-    """
-    Convert a (F, 4) face-node array (0-based, ``-1`` padding) to a list of
-    variable-length node index arrays (triangles length 3, quads length 4).
+    """Convert a padded face-node array to a list of variable-length faces.
+
+    Parameters
+    ----------
+    face_nodes_0b : ndarray of shape (F, 4)
+        Face-node connectivity (0-based, ``-1`` padding).
+
+    Returns
+    -------
+    list of ndarray
+        One array of vertex indices per face (length 3 for triangles, 4 for quads).
     """
     out: list = []
     for row in np.asarray(face_nodes_0b, dtype=np.int64):
@@ -91,14 +106,33 @@ def validate_mixed_export_matches_smood_tria(
     face_nodes_0b: np.ndarray,
     tria_smood: np.ndarray,
 ) -> tuple[int, int]:
-    """
-    Check that mixed ``face_nodes_0b`` (final ortho+merge topology) expands to the **same**
-    set of triangles as ``tria_smood`` returned by :func:`bluemesh2d.smood.smood` (same node
-    coordinates). Catches accidental export of the wrong connectivity or a silent fallback.
+    """Verify that mixed-face export matches the ``smood`` triangle output.
+
+    Expands ``face_nodes_0b`` (final ortho+merge topology) and checks that the
+    resulting triangle set equals ``tria_smood`` from
+    :func:`bluemesh2d.smood.smood`.
+
+    Parameters
+    ----------
+    vert_xy : ndarray of shape (N, 2+)
+        Node coordinates.
+    face_nodes_0b : ndarray of shape (F, 4)
+        Mixed face-node connectivity (0-based, ``-1`` padding).
+    tria_smood : ndarray of shape (T, 3)
+        Triangle connectivity returned by ``smood``.
 
     Returns
     -------
-    n_tri_faces, n_quad_faces
+    n_tri_faces : int
+        Number of triangular faces in ``face_nodes_0b``.
+    n_quad_faces : int
+        Number of quadrilateral faces in ``face_nodes_0b``.
+
+    Raises
+    ------
+    ValueError
+        If connectivity is out of range or the expanded triangles do not match
+        ``tria_smood``.
     """
     vert_xy = np.asarray(vert_xy, dtype=np.float64)
     if vert_xy.ndim != 2 or vert_xy.shape[1] < 2:
@@ -329,13 +363,22 @@ def _xr_dataset_from_ugrid_dict(ugrid: dict) -> xr.Dataset:
 
 
 def adcirc2DFlowFM_mixed(NODE: np.ndarray, face_nodes_0b: np.ndarray) -> xr.Dataset:
-    """
-    Build a UGRID dataset that keeps **quads + triangles** (e.g. after ``merge_circumcenters``).
+    """Build a UGRID dataset preserving mixed triangles and quads.
 
-    If you merge two triangles into a quad to remove a short dual link, then export
-    a **triangle-only** mesh by re-splitting the quad, you recover the **same two
-    triangles** and the same two triangle circumcenters — small-link checks still
-    fail. Call this with the mixed ``face_nodes`` from the merge pipeline instead.
+    Use this after ``merge_circumcenters`` so short dual links removed by quad
+    merging are not reintroduced by re-splitting quads into triangles.
+
+    Parameters
+    ----------
+    NODE : ndarray of shape (n_nodes, 3)
+        Node coordinates ``(x, y, z)``.
+    face_nodes_0b : ndarray of shape (n_faces, 4)
+        Mixed face-node connectivity (0-based, ``-1`` padding).
+
+    Returns
+    -------
+    xarray.Dataset
+        Delft3D-FM UGRID mesh dataset with triangles and quads.
     """
     NODE = np.asarray(NODE, dtype=np.float64)
     if NODE.ndim != 2 or NODE.shape[1] < 3:
@@ -387,23 +430,20 @@ def adcirc2DFlowFM_mixed(NODE: np.ndarray, face_nodes_0b: np.ndarray) -> xr.Data
 
 
 def adcirc2DFlowFM(NODE: np.ndarray, EDGE: np.ndarray) -> xr.Dataset:
-    """
-    Build a Delft3D FM UGRID mesh Dataset from ADCIRC-style node and triangle data.
+    """Build a Delft3D-FM UGRID mesh dataset from ADCIRC-style data.
 
     Parameters
     ----------
-    NODE : np.ndarray
-        Array of shape (n_nodes, 3) containing node coordinates (x, y, z).
-    EDGE : np.ndarray
-        Either:
-        - (n_faces, 3) triangle connectivity (0-based node indices), OR
-        - (n_faces, 4) face_nodes (0-based) with fill = -1 (triangles padded to 4).
+    NODE : ndarray of shape (n_nodes, 3)
+        Node coordinates ``(x, y, z)``.
+    EDGE : ndarray of shape (n_faces, 3) or (n_faces, 4)
+        Triangle connectivity (0-based), or padded face-node array with ``-1``
+        fill for mixed tri/quad export.
 
     Returns
     -------
-    xr.Dataset
-        UGRID mesh Dataset (mesh2d_node_x/y/z, mesh2d_face_nodes, etc.).
-        Use ds.to_netcdf(path) to write to file.
+    xarray.Dataset
+        UGRID mesh dataset (``mesh2d_node_x/y/z``, ``mesh2d_face_nodes``, etc.).
     """
     # Shape-based export selection:
     # - (T,3) int : triangle connectivity => export triangle-only mesh.
@@ -431,19 +471,17 @@ def adcirc2DFlowFM(NODE: np.ndarray, EDGE: np.ndarray) -> xr.Dataset:
 
 
 def calculate_edges(Elmts: np.ndarray) -> np.ndarray:
-    """
-    Calculates the unique edges from the given triangle elements.
+    """Extract unique edges from triangle connectivity.
 
     Parameters
     ----------
-    Elmts : np.ndarray
-        A 2D array of shape (nelmts, 3) containing the node indices for each triangle element.
+    Elmts : ndarray of shape (n_elmts, 3)
+        Triangle element connectivity (0-based node indices).
 
     Returns
     -------
-    np.ndarray
-        A 2D array of shape (n_edges, 2) containing the unique edges,
-        each represented by a pair of node indices.
+    ndarray of shape (n_edges, 2)
+        Unique undirected edges as vertex-index pairs.
     """
 
     Links = np.zeros((len(Elmts) * 3, 2), dtype=int)
@@ -463,24 +501,26 @@ def calculate_edges(Elmts: np.ndarray) -> np.ndarray:
 
 
 def build_ugrid_arrays(NODE: np.ndarray, EDGE: np.ndarray) -> dict:
-    """
-    Build UGRID mesh arrays from node coordinates and triangle connectivity.
-    Same logic as adcirc2DFlowFM but returns arrays instead of writing to file.
-    Used to rebuild ds_final from (vert, z, tria) after edge flips.
+    """Build UGRID mesh arrays from node coordinates and triangle connectivity.
+
+    Same logic as :func:`adcirc2DFlowFM` but returns arrays instead of an
+    ``xarray.Dataset``. Used to rebuild connectivity after edge flips.
 
     Parameters
     ----------
-    NODE : np.ndarray
-        Array of shape (n_nodes, 3) containing node coordinates (x, y, z).
-    EDGE : np.ndarray
-        Array of shape (n_faces, 3) containing triangle connectivity (0-based node indices).
+    NODE : ndarray of shape (n_nodes, 3)
+        Node coordinates ``(x, y, z)``.
+    EDGE : ndarray of shape (n_faces, 3)
+        Triangle connectivity (0-based node indices).
 
     Returns
     -------
     dict
-        Keys: node_x, node_y, node_z, face_nodes (1-based), edge_nodes (1-based),
-        edge_faces (1-based), face_x, face_y, edge_x, edge_y, face_x_bnd, face_y_bnd.
-        Also num_nodes, num_faces, num_edges for dimension sizes.
+        UGRID arrays with keys ``node_x``, ``node_y``, ``node_z``,
+        ``face_nodes``, ``edge_nodes``, ``edge_faces``, ``face_x``, ``face_y``,
+        ``edge_x``, ``edge_y``, ``face_x_bnd``, ``face_y_bnd``, plus
+        ``num_nodes``, ``num_faces``, ``num_edges``. Connectivity arrays are
+        1-based.
     """
     edges = calculate_edges(EDGE) + 1
     EDGE_S = np.sort(EDGE, axis=1)
@@ -555,23 +595,20 @@ def build_ugrid_arrays(NODE: np.ndarray, EDGE: np.ndarray) -> dict:
 
 
 def build_ugrid_arrays_mixed(NODE: np.ndarray, faces_list: list) -> dict:
-    """
-    Build UGRID mesh arrays from node coordinates and mixed faces (triangles and quads).
-    Each element of faces_list is an array of 3 or 4 node indices (0-based).
+    """Build UGRID mesh arrays from mixed triangle and quadrilateral faces.
 
     Parameters
     ----------
-    NODE : np.ndarray
-        Array of shape (n_nodes, 3) containing node coordinates (x, y, z).
-    faces_list : list of np.ndarray
-        Each array has shape (3,) or (4,) with 0-based node indices.
+    NODE : ndarray of shape (n_nodes, 3)
+        Node coordinates ``(x, y, z)``.
+    faces_list : list of ndarray
+        One array of 3 or 4 node indices (0-based) per face.
 
     Returns
     -------
     dict
-        Same keys as build_ugrid_arrays, with mesh2d_nMax_face_nodes = 4.
-    face_nodes has shape (n_faces, 4) with padding encoded like the GUI exports:
-        triangles padded with `-999` in 4th column, with `_FillValue=-999`.
+        Same keys as :func:`build_ugrid_arrays`. ``face_nodes`` has shape
+        ``(n_faces, 4)`` with triangles padded using fill value ``-999``.
     """
     n_nodes = NODE.shape[0]
     n_faces = len(faces_list)
@@ -714,18 +751,17 @@ def build_ugrid_arrays_mixed(NODE: np.ndarray, faces_list: list) -> dict:
 
 
 def build_loops(edges):
-    """
-    Build closed loops from a list of edges.
+    """Assemble closed node loops from an edge list.
 
     Parameters
     ----------
-    edges : (N, 2) array
-        List of edges defined by pairs of node indices.
+    edges : ndarray of shape (N, 2)
+        Edge list as pairs of node indices.
 
     Returns
     -------
-    loops : list of lists
-        Each sublist contains node indices forming a closed loop.
+    loops : list of list of int
+        Closed node-index loops.
     """
     edges = edges.tolist()
     loops = []
@@ -758,33 +794,34 @@ def export_to_grd(
     filename, vert, tria, z, crs, edge_tag, edge_open=None, edge_land=None,
     open_contours=None, land_contours=None,
 ):
-    """
-    Export mesh to ADCIRC .grd format with boundaries.
-    Prefer open_contours / land_contours from identify_boundary (list of 1D arrays
-    of node indices, one per contour). Discontinuity between contours is preserved.
+    """Export a mesh to ADCIRC ``.grd`` format with boundary contours.
+
+    Prefer ``open_contours`` / ``land_contours`` from
+    :func:`bluemesh2d.geomesh_util.border_util.identify_boundary` (one ordered
+    node-index array per contour) to preserve discontinuities between contours.
 
     Parameters
     ----------
     filename : str
-        Path to output .grd file.
-    vert : (N, 2) array
-        Node coordinates (x, y).
-    tria : (M, 3) array
-        Triangle connectivity (node indices).
-    z : (N,) array
-        Node depth/elevation values.
+        Output ``.grd`` file path.
+    vert : ndarray of shape (N, 2)
+        Node coordinates ``(x, y)``.
+    tria : ndarray of shape (M, 3)
+        Triangle connectivity (0-based node indices).
+    z : ndarray of shape (N,)
+        Node depth or elevation values.
     crs : str
-        Coordinate reference system string.
-    edge_tag : (K, 3) array
-        Edge tags (node1, node2, tag).
-    edge_open : (L, 2) array, optional
-        Open boundary edges (flat). Used if open_contours is None.
-    edge_land : (P, 2) array, optional
-        Land boundary edges (flat). Used if land_contours is None.
-    open_contours : list of 1D arrays, optional
-        One ordered contour per open boundary (node indices). If provided, used instead of edge_open.
-    land_contours : list of 1D arrays, optional
-        One ordered contour per land boundary (node indices). If provided, used instead of edge_land.
+        Coordinate reference system string written to the file header.
+    edge_tag : ndarray of shape (K, 3)
+        Tagged boundary edges ``(node1, node2, tag)``; tag 1 = open, 2 = land.
+    edge_open : ndarray of shape (L, 2), optional
+        Flat open-boundary edges. Used when ``open_contours`` is ``None``.
+    edge_land : ndarray of shape (P, 2), optional
+        Flat land-boundary edges. Used when ``land_contours`` is ``None``.
+    open_contours : list of ndarray, optional
+        Ordered open-boundary contours (node indices per contour).
+    land_contours : list of ndarray, optional
+        Ordered land-boundary contours (node indices per contour).
     """
     if open_contours is not None:
         open_loops = [np.asarray(c, dtype=int).tolist() if np.ndim(c) > 0 else [int(c)] for c in open_contours]
@@ -800,23 +837,23 @@ def export_to_grd(
             edge_land = edge_tag[edge_tag[:, 2] == 2, :2].astype(int)
         land_loops = build_loops(edge_land) if edge_land.size > 0 else []
 
-    # --- 3. Write to file
+    # 3. Write to file
     with open(filename, "w") as f:
-        # --- Header
+        # Header
         f.write(f"{crs}\n")
         f.write(f"{tria.shape[0]} {vert.shape[0]}\n")
 
-        # --- Nodes
+        # Nodes
         for i, (x, y, zi) in enumerate(zip(vert[:, 0], vert[:, 1], z), start=1):
             if np.isnan(zi):
                 f.write(f"{i} {x:.15f} {y:.15f} NAN\n")
             else:
                 f.write(f"{i} {x:.15f} {y:.15f} {zi:.15f}\n")
-        # --- Triangles
+        # Triangles
         for i, tri in enumerate(tria, start=1):
             f.write(f"{i} 3 {tri[0] + 1} {tri[1] + 1} {tri[2] + 1}\n")
 
-        # --- Open boundaries
+        # Open boundaries
         total_open_nodes = sum(len(loop) for loop in open_loops)
         f.write(f"{len(open_loops)} ! total number of open boundaries\n")
         f.write(f"{total_open_nodes} ! total number of open boundary nodes\n")
@@ -826,7 +863,7 @@ def export_to_grd(
             for nid in loop:
                 f.write(f"{nid + 1}\n")
 
-        # ---- Land boundaries
+        # Land boundaries
         total_land_nodes = sum(len(loop) for loop in land_loops)
         f.write(f"{len(land_loops)}  ! total number of land boundaries\n")
         f.write(f"{total_land_nodes} ! Total number of land boundary nodes\n")
@@ -838,17 +875,16 @@ def export_to_grd(
 
 
 def plot_grd(filename, ax=None, show_boundaries=True):
-    """
-    draw a preview of an ADCIRC .grd mesh file with optional boundaries.
+    """Plot a preview of an ADCIRC ``.grd`` mesh file.
 
     Parameters
     ----------
     filename : str
-        Path to the .grd file.
+        Path to the ``.grd`` file.
     ax : matplotlib.axes.Axes, optional
-        Axes to plot on. If None, a new figure and axes are created.
-    show_boundaries : bool
-        Whether to plot open and land boundaries.
+        Axes to plot on. If ``None``, a new figure and axes are created.
+    show_boundaries : bool, optional
+        Whether to draw open and land boundary polylines. Default is ``True``.
     """
 
     if ax is None:
@@ -857,7 +893,7 @@ def plot_grd(filename, ax=None, show_boundaries=True):
     with open(filename, "r") as f:
         lines = f.readlines()
 
-    # --- search header
+    # search header
     for i, line in enumerate(lines):
         if (
             len(line.split()) == 2
@@ -870,7 +906,7 @@ def plot_grd(filename, ax=None, show_boundaries=True):
             except Exception:
                 continue
 
-    # --- Reading nodes
+    # Reading nodes
     node_lines = lines[header_idx + 1 : header_idx + 1 + nnode]
     vert = np.zeros((nnode, 3))
     for i, ln in enumerate(node_lines):
@@ -879,14 +915,14 @@ def plot_grd(filename, ax=None, show_boundaries=True):
         vert[i, 1] = float(parts[2])  # lat
         vert[i, 2] = float(parts[3])  # z
 
-    # --- Reading elements
+    # Reading elements
     elem_lines = lines[header_idx + 1 + nnode : header_idx + 1 + nnode + nelem]
     tria = np.zeros((nelem, 3), dtype=int)
     for i, ln in enumerate(elem_lines):
         parts = ln.split()
         tria[i, :] = np.array(parts[2:5], dtype=int) - 1  # indices 0-based
 
-    # --- Reading boundaries
+    # Reading boundaries
     open_boundaries = []
     land_boundaries = []
 
@@ -921,7 +957,7 @@ def plot_grd(filename, ax=None, show_boundaries=True):
                         ids.append(int(lines[j].strip()) - 1)
                         j += 1
                     land_boundaries.append(ids)
-            # --- break outer loop
+            # break outer loop
             if j >= len(lines):
                 break
 

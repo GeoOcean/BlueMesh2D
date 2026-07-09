@@ -3,32 +3,32 @@ from shapely.geometry import LinearRing, Point, Polygon
 
 
 def read_poly_from_dat(dat_path, delimiter=None):
-    """
-    Equivalent Python implementation of the MATLAB contour reader:
-    Reads polygon(s) from a .dat file where 'NaN NaN' separates contours,
-    automatically closes each contour, and builds the global node/edge arrays.
+    """Read polygon contours from a ``.dat`` file into PSLG node/edge arrays.
+
+    Contours are separated by ``NaN NaN`` rows. Each contour is closed and
+    concatenated into global node and edge arrays.
 
     Parameters
     ----------
     dat_path : str
-        Path to the .dat file.
+        Path to the ``.dat`` file.
     delimiter : str, optional
-        Delimiter for numpy.loadtxt (default: auto-detect).
+        Delimiter for :func:`numpy.loadtxt`. Default is auto-detected.
 
     Returns
     -------
     node : ndarray of shape (N, 2)
-        Node coordinates (x, y)
-    edge : ndarray of shape (M, 2)
-        Edge connectivity (zero-based indices)
+        Vertex coordinates ``(x, y)``.
+    edge : ndarray of shape (M, 2), dtype int
+        Edge connectivity (0-based vertex indices).
     """
 
-    # --- Load file
+    # Load file
     p0 = np.loadtxt(dat_path, delimiter=delimiter)
     if p0.shape[1] < 2:
         raise ValueError("The .dat file must contain at least two columns: x y")
 
-    # --- Find NaN separators
+    # Find NaN separators
     isnan = np.isnan(p0[:, 0])
     s = np.where(isnan)[0]
     s = np.concatenate(([0], s, [len(p0)]))
@@ -37,7 +37,7 @@ def read_poly_from_dat(dat_path, delimiter=None):
     edge = []
     cont = 0
 
-    # --- Loop over polygons
+    # Loop over polygons
     for i in range(len(s) - 1):
         p = p0[s[i] : s[i + 1], :]
         p = p[~np.isnan(p[:, 0])]  # remove NaN rows
@@ -58,7 +58,7 @@ def read_poly_from_dat(dat_path, delimiter=None):
 
         cont += n  # offset for next polygon
 
-    # --- Concatenate all nodes and edges
+    # Concatenate all nodes and edges
     node = np.vstack(node)
     edge = np.vstack(edge).astype(int)
 
@@ -66,11 +66,7 @@ def read_poly_from_dat(dat_path, delimiter=None):
 
 
 def _split_edges_at_discontinuity(edges):
-    """
-    Split edges whenever two consecutive rows do NOT share a vertex.
-    Works directly on the provided order (no reordering).
-    Returns list of (n_i, 2) edge arrays.
-    """
+    """Split an edge list wherever consecutive rows share no vertex."""
     if edges is None or edges.size == 0:
         return []
     edges = np.asarray(edges, dtype=int)
@@ -98,10 +94,7 @@ def _split_edges_at_discontinuity(edges):
 
 
 def _ordered_edges_to_chains(edges):
-    """
-    First order edges into chains (consecutive share a vertex within each component),
-    then split the ordered result at discontinuities.
-    """
+    """Order edges into chains, then split at discontinuities."""
     if edges is None or edges.size == 0:
         return []
     edges = np.asarray(edges, dtype=int)
@@ -185,33 +178,38 @@ def _chain_edges_to_nodelist(edge_arr):
 
 
 def identify_boundary(vert, tria, z, zlim=0.0, Manual_open_boundary=None):
-    """
-    Identify open and land boundaries from a triangulated mesh.
-    Edges are classified by depth vs zlim and optional Manual_open_boundary.
-    Contours are ordered and split at discontinuities (consecutive edges
-    without a shared vertex). Returns a dict.
+    """Classify open and land boundaries from a triangulated mesh.
+
+    Boundary edges are the mesh edges adjacent to only one triangle. They are
+    tagged open when mean nodal elevation exceeds ``zlim`` or the edge midpoint
+    lies inside ``Manual_open_boundary``. Contours are ordered and split at
+    discontinuities.
 
     Parameters
     ----------
-    vert : (N, 2) array
-        Node coordinates (x, y).
-    tria : (M, 3) array
-        Triangle connectivity (node indices).
-    z : (N,) array
-        Elevation at nodes.
-    zlim : float
-        Elevation threshold (zmean > zlim -> open).
-    Manual_open_boundary : shapely Polygon, optional
-        If provided, edges whose midpoint lies inside are classified as open.
+    vert : ndarray of shape (N, 2)
+        Node coordinates ``(x, y)``.
+    tria : ndarray of shape (M, 3)
+        Triangle connectivity (0-based node indices).
+    z : ndarray of shape (N,)
+        Nodal elevation values.
+    zlim : float, optional
+        Elevation threshold; edges with mean elevation above this are open.
+        Default is 0.0.
+    Manual_open_boundary : shapely.geometry.Polygon, optional
+        Edges whose midpoint lies inside this polygon are classified as open.
 
     Returns
     -------
-    dict with keys:
-        edge_tag : (K, 3) array, (node1, node2, tag), tag=1 open, tag=2 land.
-        edge_open : (L, 2) array, flat open boundary edges.
-        edge_land : (P, 2) array, flat land boundary edges.
-        open_contours : list of 1D arrays of node indices (one per contour).
-        land_contours : list of 1D arrays of node indices (one per contour).
+    dict
+        Dictionary with keys:
+
+        - ``edge_tag`` : ndarray of shape (K, 3), ``(node1, node2, tag)``
+          (tag 1 = open, 2 = land)
+        - ``edge_open`` : ndarray of shape (L, 2), flat open-boundary edges
+        - ``edge_land`` : ndarray of shape (P, 2), flat land-boundary edges
+        - ``open_contours`` : list of 1D node-index arrays (one per contour)
+        - ``land_contours`` : list of 1D node-index arrays (one per contour)
     """
     edges = np.vstack([tria[:, [0, 1]], tria[:, [1, 2]], tria[:, [2, 0]]])
     edges = np.sort(edges, axis=1)

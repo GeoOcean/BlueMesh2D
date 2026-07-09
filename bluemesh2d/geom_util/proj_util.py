@@ -4,7 +4,18 @@ from shapely.ops import transform
 
 
 def get_utm_crs_from_crs(crs):
-    """Return a UTM CRS suited to the given geographic CRS."""
+    """Return a UTM CRS suited to the given geographic CRS.
+
+    Parameters
+    ----------
+    crs : pyproj.CRS
+        Input coordinate reference system.
+
+    Returns
+    -------
+    pyproj.CRS
+        UTM CRS for the origin of ``crs``, or ``crs`` unchanged if already projected.
+    """
     if crs.is_projected:
         return crs
     transformer = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
@@ -14,13 +25,11 @@ def get_utm_crs_from_crs(crs):
     return pyproj.CRS.from_epsg(epsg_code * 100 + utm_zone)
 
 def get_local_utm_crs(crs, x=None, y=None, bbox=None):
-    """
-    Return a local UTM CRS (Transverse Mercator centered on the data).
+    """Return a local Transverse Mercator CRS centered on the data.
 
-    If the CRS is already projected, it is returned unchanged.
-    Otherwise, the data is converted to WGS84 to compute a center point,
-    and a Transverse Mercator projection is built with that central
-    meridian and origin latitude (units in meters).
+    If ``crs`` is already projected, it is returned unchanged. Otherwise the
+    data center is converted to WGS84 and a Transverse Mercator projection is
+    built with that central meridian and origin latitude (units in metres).
 
     Parameters
     ----------
@@ -73,19 +82,11 @@ def get_local_utm_crs(crs, x=None, y=None, bbox=None):
     return pyproj.CRS.from_wkt(wkt)
 
 def get_proj_crs_from_ll(lon0, lat0):
-    """
-    Create a local Transverse Mercator projection centered on given coordinates.
-    
-    This projection is designed to match Delft3D-FM's behavior when jsferic=0
-    (cartesian/plane coordinates). Delft3D uses a local plane projection for
-    distance calculations in flow_geominit.f90, where distances are computed
-    as simple Euclidean distances in the projected coordinate system.
-    
-    The projection uses:
-    - Transverse Mercator (tmerc) for minimal distortion near the center
-    - Scale factor k=1.0 at the central meridian (better for local accuracy)
-    - Centered on the provided lon0, lat0 coordinates
-    - Units in meters (matching Delft3D's internal calculations)
+    """Create a local Transverse Mercator CRS centered on given coordinates.
+
+    Designed to match Delft3D-FM cartesian distance calculations when
+    ``jsferic=0``: Transverse Mercator with scale factor ``k=1.0`` at the
+    central meridian, units in metres.
 
     Parameters
     ----------
@@ -97,19 +98,11 @@ def get_proj_crs_from_ll(lon0, lat0):
     Returns
     -------
     pyproj.CRS
-        Local Transverse Mercator projection CRS in meters, centered on (lon0, lat0).
-        
+        Local Transverse Mercator CRS in metres, centered on ``(lon0, lat0)``.
+
     Notes
     -----
-    This matches Delft3D-FM's approach in flow_geominit.f90 where:
-    - When jsferic=0, distances are computed as sqrt(dx² + dy²) in projected coordinates
-    - The projection should minimize distortion for the local area of interest
-    - Using k=1.0 provides better local accuracy than k=0.9996 (UTM standard)
-    
-    References
-    ----------
-    Delft3D-FM: flow_geominit.f90 (line 407)
-    geometry_module.f90: dbdistance function (line 370-399)
+    Uses ``k=1.0`` for local accuracy rather than the UTM standard ``k=0.9996``.
     """
 
     # Use k=1.0 for better local accuracy (vs k=0.9996 for UTM)
@@ -121,8 +114,7 @@ def get_proj_crs_from_ll(lon0, lat0):
 
 
 def reproject_node(node, crs_from, crs_to):
-    """
-    Reproject 2D geometry from one CRS to another.
+    """Reproject 2D vertex coordinates from one CRS to another.
 
     Parameters
     ----------
@@ -146,13 +138,12 @@ def reproject_node(node, crs_from, crs_to):
 
 
 def reproject_geometry(geom, crs_from, crs_to):
-    """
-    Reproject a geometry or coordinate array from one CRS to another.
+    """Reproject a Shapely geometry or coordinate array between CRSs.
 
     Parameters
     ----------
     geom : ndarray of shape (N, 2) or shapely geometry
-        Coordinates or geometry to be reprojected.
+        Coordinates or geometry to reproject.
     crs_from : pyproj.CRS or str
         Source coordinate reference system.
     crs_to : pyproj.CRS or str
@@ -160,8 +151,8 @@ def reproject_geometry(geom, crs_from, crs_to):
 
     Returns
     -------
-    same type as input
-        Reprojected geometry or coordinate array.
+    ndarray or shapely geometry
+        Reprojected geometry or coordinate array (same type as input).
     """
 
     transformer = pyproj.Transformer.from_crs(crs_from, crs_to, always_xy=True)

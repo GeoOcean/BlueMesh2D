@@ -4,53 +4,38 @@ from ..aabb_tree.findtria import findtria
 
 
 def trihfn(test, vert, tria, tree, hfun):
-    """
-    Interpolate a discrete mesh-size function over a 2D triangulation.
-
-    This function evaluates a mesh-size field (`HFUN`) defined on a 2-simplex
-    triangulation `{VERT, TRIA}` at arbitrary query points `TEST`.
-    The interpolation is performed using barycentric coordinates within
-    the containing triangle, efficiently located using a spatial index.
+    """Interpolate a discrete mesh-size function over a 2D triangulation.
 
     Parameters
     ----------
-    TEST : ndarray of shape (Q, 2)
-        XY-coordinates of the query points where the mesh-size field will be evaluated.
-    VERT : ndarray of shape (V, 2)
-        XY-coordinates of the mesh vertices.
-    TRIA : ndarray of shape (T, 3)
-        Triangle connectivity array, where each row defines a triangle by the indices
-        of its three vertices.
-    TREE : object
-        Spatial search structure (AABB tree) built for `{VERT, TRIA}`, as returned by `idxtri`.
-        Used to efficiently locate which triangle each query point belongs to.
-    HFUN : ndarray of shape (V,)
-        Discrete mesh-size values defined at the vertices of the triangulation.
+    test : ndarray of shape (Q, 2)
+        Query point coordinates.
+    vert : ndarray of shape (V, 2)
+        Mesh vertex coordinates.
+    tria : ndarray of shape (T, 3)
+        Triangle connectivity.
+    tree : dict
+        AABB tree for ``{vert, tria}`` from a prior :func:`findtria` call.
+    hfun : ndarray of shape (V,)
+        Mesh-size values at vertices.
 
     Returns
     -------
-    HVAL : ndarray of shape (Q,)
-        Interpolated mesh-size values evaluated at each query point in `TEST`.
+    hval : ndarray of shape (Q,)
+        Interpolated mesh-size at each query point.
 
     Notes
     -----
-    - The interpolation is linear within each triangle, based on barycentric coordinates.
-    - Points located outside the triangulated domain may return `NaN` or extrapolated values.
-    - A spatial index (e.g., an AABB tree) greatly accelerates point-location queries.
+    Interpolation is linear within each containing triangle using barycentric
+    coordinates. Points outside the triangulated domain keep the maximum
+    vertex value.
 
     References
     ----------
-    Translation of the MESH2D function `TRIHFN2`.
+    Translation of the MESH2D function ``TRIHFN2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
-
-    See also
-    --------
-    lfshfn : Estimate local feature size fields for polygonal domains.
-    limhfn : Apply gradient limiting to mesh-size functions.
-    idxtri : Build spatial search trees for triangle meshes.
     """
 
-    # -------------------------- basic checks
     if not (
         isinstance(test, np.ndarray)
         and isinstance(vert, np.ndarray)
@@ -72,7 +57,6 @@ def trihfn(test, vert, tria, tree, hfun):
     if tria.min() < 0 or tria.max() >= nvrt:
         raise ValueError("trihfn:invalidInputs: invalid TRIA array")
 
-    # ---------------------- test-to-tria queries
     tp, tj, _ = findtria(vert, tria, test, tree)
 
     if tp is None or len(tp) == 0:
@@ -82,7 +66,6 @@ def trihfn(test, vert, tria, tree, hfun):
         in_mask = tp[:, 0] > 0
         ti = tj[tp[in_mask, 0]]
 
-    # ------------------------------------- calc. linear interp.
     hval = np.full(test.shape[0], np.max(hfun))
 
     if np.any(in_mask):

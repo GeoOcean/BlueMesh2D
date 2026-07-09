@@ -4,57 +4,41 @@ from .inpoly_mat import inpoly_mat
 
 
 def inpoly(vert, node, edge=None, ftol=None):
-    """
-    INPOLY : perform "point-in-polygon" queries.
-
-    [stat] = inpoly(vert, node, edge) determines whether each point in
-    `vert` lies inside or outside a polygon defined by {node, edge} in the
-    2D plane. Supports general non-convex and multiply-connected polygons.
+    """Test whether points lie inside a 2D polygon.
 
     Parameters
     ----------
-    vert : ndarray (N, 2)
-        Coordinates of query points to test.
-    node : ndarray (M, 2)
-        Coordinates of polygon vertices.
-    edge : ndarray (P, 2), optional
-        Edge connectivity array, where each row defines a polygon edge.
-        If omitted, vertices in `node` are assumed to be connected in order.
+    vert : ndarray of shape (N, 2)
+        Query point coordinates.
+    node : ndarray of shape (M, 2)
+        Polygon vertex coordinates.
+    edge : ndarray of shape (P, 2), optional
+        Edge connectivity as vertex-index pairs. When omitted, vertices in
+        ``node`` are connected in order.
     ftol : float, optional
-        Floating-point tolerance for boundary comparisons. Default: `eps**0.85`.
+        Floating-point tolerance for boundary tests; default is
+        ``eps**0.85``.
 
     Returns
     -------
-    stat : ndarray (N,)
-        Boolean array, where `True` indicates points lying inside the polygon.
-    bnds : ndarray (N,)
-        Boolean array, where `True` indicates points lying on a polygon edge.
+    stat : ndarray of bool, shape (N,)
+        ``True`` for points classified as inside the polygon.
+    bnds : ndarray of bool, shape (N,)
+        ``True`` for points lying on a polygon edge.
 
     Notes
     -----
-    - Implements a robust **crossing-number algorithm** that counts the number
-      of times a ray extending from each test point intersects polygon edges.
-      Points with an odd number of crossings are classified as "inside".
-    - Uses sorting and binary-search techniques to accelerate the process:
-        * Sorts query points by y-value.
-        * Uses bounding-box filters to avoid unnecessary edge intersection checks.
-    - The resulting complexity scales as:
-        O(M * H + M * log(N) + N * log(N)),
-      where:
-        - N is the number of query points,
-        - M is the number of polygon edges,
-        - H is the average point–edge overlap (typically H ≪ N).
+    Uses a crossing-number algorithm with sorted query points and binary
+    search over edge y-ranges.
 
     References
     ----------
-    Translation of the MESH2D function `INPOLY2`.
+    Translation of the MESH2D function ``INPOLY2``.
     Original MATLAB source: https://github.com/dengwirda/mesh2d
     """
 
-    # ---------------------------------------------- extract args
     node = np.asarray(node, dtype=float)
     vert = np.asarray(vert, dtype=float)
-    # ---------------------------------------------- default args
     if edge is None:
         nnod = node.shape[0]
         edge = np.vstack(
@@ -69,14 +53,12 @@ def inpoly(vert, node, edge=None, ftol=None):
     nnod = node.shape[0]
     nvrt = vert.shape[0]
 
-    # ---------------------------------------------- basic checks
     if edge.min() < 0 or edge.max() > nnod:
         raise ValueError("inpoly: invalid EDGE input array.")
 
     STAT = np.zeros(nvrt, dtype=bool)
     BNDS = np.zeros(nvrt, dtype=bool)
 
-    # ----------------------------------- prune points using bbox
     nmin = node.min(axis=0)
     nmax = node.max(axis=0)
     ddxy = nmax - nmin
@@ -97,7 +79,7 @@ def inpoly(vert, node, edge=None, ftol=None):
     vsub = vert[mask, :].copy()
     nsub = node.copy()
 
-    # -------------- flip to ensure the y-axis is the "long" axis
+    # Flip to ensure the y-axis is the "long" axis
     vmin = vsub.min(axis=0)
     vmax = vsub.max(axis=0)
     ddxy = vmax - vmin
@@ -105,7 +87,6 @@ def inpoly(vert, node, edge=None, ftol=None):
         vsub = vsub[:, [1, 0]]
         nsub = nsub[:, [1, 0]]
 
-    # ----------------------------------- sort points via y-value
     swap = nsub[edge[:, 1], 1] < nsub[edge[:, 0], 1]
     edge[swap] = edge[swap][:, [1, 0]]
 

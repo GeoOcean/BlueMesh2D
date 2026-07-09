@@ -204,9 +204,33 @@ def dual_criteria_on_fan_mesh(
     removesmalllinkstrsh: float,
     jsferic: int = 1,
 ) -> Tuple[bool, float, int]:
-    """
-    Returns (ok, max_abs_cosphi, n_small_flow_links) using meshkernel definitions
-    on the merge-consistent triangle mesh (same proxy as ortho).
+    """Check dual-mesh orthogonality and small-link criteria on a triangle proxy.
+
+    Parameters
+    ----------
+    vert : ndarray of shape (N, 2)
+        Node coordinates (lon/lat degrees or planar x/y per ``jsferic``).
+    tria : ndarray of shape (T, 3)
+        0-based triangle connectivity.
+    tri_origin_face_id : ndarray of shape (T,)
+        Origin mixed-face index for each proxy triangle.
+    quad_face_mask : ndarray of shape (F,)
+        Whether each original mixed face is a quad.
+    cosphi_threshold : float
+        Maximum allowed ``|cos φ|`` on internal flow links.
+    removesmalllinkstrsh : float
+        Small flow-link threshold (Delft3D convention).
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+
+    Returns
+    -------
+    ok : bool
+        ``True`` when both criteria are satisfied.
+    max_c : float
+        Maximum ``|cos φ|`` over counted edges.
+    n_small : int
+        Number of small flow links detected.
     """
     from . import orthogonalize as ortho
     from .geometry import build_edges_from_tria
@@ -289,44 +313,57 @@ def ortho_merge_iterate_dataset(
     jsferic: int = 1,
     merge_small_links: bool = True,
 ) -> tuple:
-    """
-    Iteratively apply (**orthogonalize → merge_circumcenters**) on a UGRID dataset.
-
-    With ``merge_small_links=False`` the mesh stays pure triangles: the
-    ``merge_circumcenters`` step is skipped and the orthogonalizer's own
-    small-flow-link handling (guarded edge flips + circumcenter-separation
-    displacement) is enabled instead, targeting the same dual criteria.
+    """Iteratively orthogonalize and merge circumcenters on a UGRID dataset.
 
     Parameters
     ----------
     ds : xarray.Dataset
         Delft3D-FM UGRID mesh dataset.
-    outer_iter_max : int
-        Number of outer iterations (ortho+merge cycles).
-    cosphi_threshold, removesmalllinkstrsh, buffer_layers, max_global_iter, smooth_iter
-        Passed to `orthogonalize_tria_mesh`.
-    enable_edge_flips : bool
-        Allow triangle edge flips during the ortho step.
-    stop_if_no_merge : bool
-        Stop outer loop when merge does not reduce number of faces (no merge applied).
-    ortho_disable_smalllink_logic : bool
-        If True, the ortho step is focused on orthogonality only (small-link handling
-        disabled in ortho) and small-link removal is delegated to merge_circumcenters.
-    require_both_criteria : bool
-        If True, after the main loop (and optional recovery), require
-        ``max|cosφ| <= cosphi_threshold`` and ``n_small_flow_links == 0`` on the
-        triangle proxy (quad diagonal ``(v1,v2)``); otherwise raise ``RuntimeError``. **False** (default)
-        skips that check and recovery
-    max_recovery_iterations : int
-        Max extra ortho+merge cycles when criteria fail after the main loop.
-        Ignored if ``require_both_criteria`` is False.
-    recovery_stagnation_break : int
-        Stop recovery early if ``(max|cosφ|, n_small)`` is unchanged for this many
-        consecutive recovery cycles (0 = disable). Avoids paying for many no-op passes.
+    outer_iter_max : int, optional
+        Number of outer ortho+merge cycles.
+    cosphi_threshold : float, optional
+        Maximum allowed ``|cos φ|`` passed to :func:`orthogonalize_tria_mesh`.
+    removesmalllinkstrsh : float, optional
+        Small flow-link threshold.
+    buffer_layers : int, optional
+        Zone buffer depth for orthogonalization.
+    max_global_iter : int, optional
+        Global orthogonalization passes per cycle.
+    smooth_iter : int, optional
+        Smoothing iterations per zone pass.
+    enable_edge_flips : bool, optional
+        Allow quality-guarded edge flips during orthogonalization.
+    stop_if_no_merge : bool, optional
+        Stop when a merge cycle reduces no faces.
+    ortho_disable_smalllink_logic : bool, optional
+        If ``True``, delegate small-link removal to merge (not ortho).
+    require_both_criteria : bool, optional
+        If ``True``, require dual criteria after main and recovery cycles.
+    max_recovery_iterations : int, optional
+        Extra recovery cycles when criteria fail.
+    recovery_stagnation_break : int, optional
+        Stop recovery after this many stagnant cycles (0 = disabled).
+    outer_stagnation_break : int, optional
+        Stop main loop after this many stagnant outer cycles.
+    adaptive_recovery : bool, optional
+        Increase recovery effort when criteria remain unmet.
+    recovery_buffer_growth, recovery_smooth_iter_growth, recovery_global_iter_growth : int, optional
+        Per-recovery growth of buffer/smooth/global iteration counts.
+    on_state : callable, optional
+        Called with :class:`OrthoMergeStats` after each cycle.
+    verbose : bool, optional
+        Enable per-zone orthogonalization logs.
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+    merge_small_links : bool, optional
+        If ``False``, keep pure triangles (no quad merge step).
 
     Returns
     -------
-    (ds_final, stats_list)
+    ds_final : xarray.Dataset
+        Updated mesh dataset.
+    stats : list of OrthoMergeStats
+        Per-cycle statistics.
     """
     import xarray as xr
 
@@ -613,7 +650,15 @@ def ortho_merge_iterate_dataset(
 def print_stats(
     stats: Sequence[OrthoMergeStats], *, print_header: bool = False
 ) -> None:
-    """Smooth-like ortho+merge summary block (one header + progressive rows)."""
+    """Print a compact ortho+merge progress table.
+
+    Parameters
+    ----------
+    stats : sequence of OrthoMergeStats
+        Statistics rows to display.
+    print_header : bool, optional
+        If ``True``, print the column header first.
+    """
     if print_header:
         print(" -------------------------------------------------------")
         print("      |STATE.|      |MAX|COS(PHI)| |N_SMALL| |N_ZONES|")
@@ -664,24 +709,32 @@ def ortho_merge_iterate_tria(
     jsferic: int = 1,
     merge_small_links: bool = True,
 ) -> tuple:
-    """
-    Convenience wrapper that starts from a pure triangle mesh (vert, tria).
+    """Run the ortho+merge pipeline starting from a pure triangle mesh.
 
     Parameters
     ----------
-    vert : (N,2) float array
-        Node coordinates (lon/lat degrees, consistent with your UGRID usage).
-    tria : (T,3) int array
+    vert : ndarray of shape (N, 2)
+        Node coordinates (lon/lat degrees or planar x/y per ``jsferic``).
+    tria : ndarray of shape (T, 3)
         0-based triangle connectivity.
-    node_z : (N,) optional
-        If provided, will be stored as mesh2d_node_z. If None, zeros are used.
+    node_z : ndarray of shape (N,), optional
+        Node elevations; zeros used if ``None``.
+    outer_iter_max, cosphi_threshold, removesmalllinkstrsh, buffer_layers,
+    max_global_iter, smooth_iter, enable_edge_flips, stop_if_no_merge,
+    ortho_disable_smalllink_logic, require_both_criteria,
+    max_recovery_iterations, recovery_stagnation_break, outer_stagnation_break,
+    adaptive_recovery, recovery_buffer_growth, recovery_smooth_iter_growth,
+    recovery_global_iter_growth, on_state, verbose, jsferic, merge_small_links
+        Same meaning as in :func:`ortho_merge_iterate_dataset`.
 
     Returns
     -------
-    (vert_out, face_nodes_out, stats)
-        - vert_out: (N,2) updated node coordinates
-        - face_nodes_out: (F,4) int with fill -1 for triangles, quads have 4 nodes (0-based)
-        - stats: list[OrthoMergeStats]
+    vert_out : ndarray of shape (N, 2)
+        Updated node coordinates.
+    face_nodes_0b : ndarray of shape (F, 4)
+        Mixed face-node rows (0-based, ``-1`` fill for triangles).
+    stats : list of OrthoMergeStats
+        Per-cycle statistics.
     """
     import xarray as xr
 

@@ -208,9 +208,7 @@ def _getdy(x1: float, y1: float, x2: float, y2: float, jsferic: int = 1) -> floa
     return float(EARTH_RADIUS_DEG2RAD * (y2 - y1))
 
 
-# ---------------------------------------------------------------------------
 # Small flow links (Delft3D): circumcenters in lon/lat, dxlink < 0.9*thresh*0.5*(sqrt(ba1)+sqrt(ba2))
-# ---------------------------------------------------------------------------
 
 
 def _lonlat_to_local_xy(
@@ -509,13 +507,33 @@ def compute_small_links_from_arrays(
     jsferic: int = 1,
     num_interior: Optional[np.ndarray] = None,
 ) -> Tuple[int, np.ndarray]:
-    """
-    Small flow links (Delft3D): dxlink < 0.9*removesmalllinkstrsh*0.5*(sqrt(ba1)+sqrt(ba2)).
-    Inputs 0-based (invalid = -1). Returns (n_small, edge_indices_of_small_links).
-    If edge_indices is provided, only those edges are tested (returned small_edges are a subset).
-    Coordinates are lon/lat degrees for jsferic=1, planar x/y for jsferic=0.
-    `num_interior` may pass the precomputed `_num_interior_edges_per_face`
-    (topology-only) to avoid the O(n_edges) recount in tight trial loops.
+    """Count small flow links using the Delft3D circumcenter-separation test.
+
+    Parameters
+    ----------
+    node_x, node_y : ndarray of shape (N,)
+        Node coordinates (lon/lat degrees or planar x/y per ``jsferic``).
+    face_nodes : ndarray of shape (F, 3)
+        0-based triangle connectivity (invalid entries ``-1``).
+    edge_nodes : ndarray of shape (E, 2)
+        Edge endpoint indices.
+    edge_faces : ndarray of shape (E, 2)
+        Adjacent face indices (``-1`` on boundary).
+    removesmalllinkstrsh : float, optional
+        Small flow-link threshold.
+    edge_indices : ndarray, optional
+        Restrict testing to these edge indices.
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+    num_interior : ndarray, optional
+        Precomputed interior-edge counts per face.
+
+    Returns
+    -------
+    n_small : int
+        Number of small flow links found.
+    small_edges : ndarray of shape (n_small,)
+        Edge indices flagged as small.
     """
     node_x = np.asarray(node_x, dtype=np.float64).ravel()
     node_y = np.asarray(node_y, dtype=np.float64).ravel()
@@ -614,10 +632,19 @@ def try_flip_small_flow_edge_ugrid(
     mesh: "MeshData",
     edge_index: int,
 ) -> bool:
-    """
-    Try to fix a small flow link by flipping the shared edge (swap diagonal of the quad).
-    The two triangles must form a strictly convex quadrilateral. Modifies mesh.face_nodes in place.
-    Returns True if the edge was flipped.
+    """Flip a shared edge to remove a small flow link.
+
+    Parameters
+    ----------
+    mesh : MeshData
+        Mesh to modify in place.
+    edge_index : int
+        Index of the edge to flip.
+
+    Returns
+    -------
+    bool
+        ``True`` if the edge was flipped.
     """
     face_nodes = mesh.face_nodes
     edge_nodes = mesh.edge_nodes
@@ -678,17 +705,27 @@ def try_flip_candidate_edges_ugrid(
     max_cosphi_allowed: Optional[float] = None,
     jsferic: int = 1,
 ) -> int:
-    """
-    Try to flip a set of candidate edges.
+    """Flip candidate edges with optional local ``|cos φ|`` quality guard.
 
-    If ``max_cosphi_allowed`` is given, each flip is quality-checked on the
-    edges of its convex quad: the flip is reverted unless the local max
-    |cosphi| stays within ``max(max_cosphi_allowed, value before the flip)``.
-    Without this, a geometrically valid flip can create very obtuse triangles
-    whose (pulled-inside) circumcenters give |cosphi| ~ 1.0 on a neighbouring
-    edge — an unrecoverable degradation that stalls the outer/recovery cycles.
-    With ``max_cosphi_allowed=None`` only geometric validity is verified and
-    the caller is responsible for the global quality check after the batch.
+    Parameters
+    ----------
+    mesh : MeshData
+        Mesh to modify in place.
+    candidate_edges : ndarray
+        Edge indices to attempt flipping.
+    removesmalllinkstrsh : float
+        Small flow-link threshold (for bookkeeping).
+    max_flip_iter : int, optional
+        Maximum flip attempts per candidate.
+    max_cosphi_allowed : float, optional
+        Revert flips that exceed this local ``|cos φ|`` cap.
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+
+    Returns
+    -------
+    int
+        Number of edges successfully flipped.
     """
     candidate_edges = np.asarray(candidate_edges, dtype=np.int64).ravel()
     if candidate_edges.size == 0:
@@ -1386,9 +1423,7 @@ def _edge_faces_from_faces_edges(
     return edge_faces
 
 
-# ---------------------------------------------------------------------------
 # Index conversion: UGRID/orthogonality use 1-based; we use 0-based internally.
-# ---------------------------------------------------------------------------
 
 
 def _to_0b(arr: np.ndarray) -> np.ndarray:
@@ -1403,9 +1438,7 @@ def _to_1b(arr: np.ndarray) -> np.ndarray:
     return out.astype(arr.dtype)
 
 
-# ---------------------------------------------------------------------------
 # Orthogonality: |cosphi| on in-memory arrays (0-based in, cosphi_abs out)
-# ---------------------------------------------------------------------------
 
 
 def compute_cosphi_abs_from_arrays(
@@ -1419,11 +1452,35 @@ def compute_cosphi_abs_from_arrays(
     edge_indices: Optional[np.ndarray] = None,
     jsferic: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Compute |cosphi| for edges. Inputs 0-based (invalid = -1).
-    If edge_indices is provided (0-based), only compute for those edges (and only
-    the face centers needed). Returns (edge_nodes, edge_faces, cosphi_abs).
-    Coordinates are lon/lat degrees for jsferic=1, planar x/y for jsferic=0.
+    """Compute ``|cos φ|`` on internal flow links.
+
+    Parameters
+    ----------
+    node_x, node_y : ndarray of shape (N,)
+        Node coordinates.
+    face_nodes : ndarray of shape (F, 3)
+        0-based face connectivity (invalid ``-1``).
+    edge_nodes : ndarray of shape (E, 2)
+        Edge endpoint indices.
+    edge_faces : ndarray of shape (E, 2), optional
+        Adjacent face indices; rebuilt if ``None``.
+    use_file_centers : bool, optional
+        Must be ``False`` (unsupported in-memory variant).
+    use_circumcenter_3d : bool, optional
+        Use 3D spherical circumcenters when ``True``.
+    edge_indices : ndarray, optional
+        Restrict computation to these edges.
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+
+    Returns
+    -------
+    edge_nodes : ndarray of shape (E, 2)
+        Edge endpoints (1-based when full path is used).
+    edge_faces : ndarray of shape (E, 2)
+        Adjacent faces (1-based when full path is used).
+    cosphi_abs : ndarray of shape (E,)
+        Absolute cosine of angle between edge and circumcenter line.
     """
     if use_file_centers:
         raise ValueError(
@@ -1632,9 +1689,7 @@ def _cosphi_abs_for_edges(
     return cosphi_abs
 
 
-# ---------------------------------------------------------------------------
 # Utility structures for zones
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -1700,13 +1755,24 @@ def _classify_zone_nodes(
     return internal, boundary
 
 
-# ---------------------------------------------------------------------------
 # Zone graph (face adjacency, BFS, zone nodes)
-# ---------------------------------------------------------------------------
 
 
 def build_face_adjacency(edge_faces: np.ndarray, n_faces: int) -> List[List[int]]:
-    """Adjacency graph (neighboring faces via a shared edge; sorted, unique)."""
+    """Build a face adjacency list from shared edges.
+
+    Parameters
+    ----------
+    edge_faces : ndarray of shape (E, 2)
+        Adjacent face indices per edge.
+    n_faces : int
+        Total number of faces.
+
+    Returns
+    -------
+    neigh : list of list of int
+        Neighbouring face indices for each face (sorted, unique).
+    """
     ef = np.asarray(edge_faces)
     m = (ef[:, 0] >= 0) & (ef[:, 1] >= 0) & (ef[:, 0] != ef[:, 1])
     a = ef[m, 0].astype(np.int64)
@@ -1741,7 +1807,22 @@ def bfs_faces(
     neighbors: List[List[int]],
     max_depth: int,
 ) -> Set[int]:
-    """Return the set of faces at topological distance <= max_depth."""
+    """Collect faces within a given topological depth via BFS.
+
+    Parameters
+    ----------
+    start_faces : iterable of int
+        Seed face indices.
+    neighbors : list of list of int
+        Face adjacency graph.
+    max_depth : int
+        Maximum BFS depth (inclusive).
+
+    Returns
+    -------
+    visited : set of int
+        Faces at distance ``<= max_depth`` from any seed.
+    """
     visited: Set[int] = set()
     frontier: Set[int] = set(int(f) for f in start_faces)
     depth = 0
@@ -1758,7 +1839,20 @@ def bfs_faces(
 
 
 def zone_nodes_from_faces(face_nodes: np.ndarray, faces_zone: Set[int]) -> np.ndarray:
-    """Nodes used by a subset of faces (0-based indices)."""
+    """Return sorted unique node indices used by a face subset.
+
+    Parameters
+    ----------
+    face_nodes : ndarray of shape (F, 3)
+        Face connectivity (0-based).
+    faces_zone : set of int
+        Face indices defining the zone.
+
+    Returns
+    -------
+    nodes : ndarray of shape (M,)
+        Unique node indices in the zone.
+    """
     if not faces_zone:
         return np.empty(0, dtype=np.int64)
     f_idx = np.fromiter(faces_zone, dtype=np.int64)
@@ -1783,14 +1877,45 @@ def apply_combined_ortho_smoother_to_zone(
     jsferic: int = 1,
     smalllink_priority: bool = False,
 ) -> Tuple[bool, bool]:
-    """
-    Combine simple (Laplacian) smoothing and orthogonality-oriented displacement,
-    with a mu(it) factor increasing as in smood:
+    """Apply combined Laplacian smoothing and orthogonality displacement to a zone.
 
-        Δx = (1 - mu) * Δx_smooth + mu * (Δx_ortho + beta * Δx_small)
+    Parameters
+    ----------
+    mesh : MeshData
+        Mesh to modify in place.
+    faces_zone : set of int
+        Face indices in the zone.
+    cosphi_abs : ndarray of shape (E,)
+        Current ``|cos φ|`` per edge.
+    cosphi_threshold : float
+        Target maximum ``|cos φ|``.
+    it : int
+        Global iteration index (controls blending factor ``mu``).
+    max_global_iter : int
+        Total global iterations (for ``mu`` schedule).
+    n_inner : int, optional
+        Inner smoothing sub-iterations.
+    mu_max : float, optional
+        Maximum orthogonality blend factor.
+    relax : float, optional
+        Relaxation on coordinate updates.
+    small_edges_global : ndarray, optional
+        Global small-link edge indices.
+    removesmalllinkstrsh : float, optional
+        Small flow-link threshold.
+    verbose : bool, optional
+        Log per-zone accept/reject decisions.
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+    smalllink_priority : bool, optional
+        Prioritize small-link displacement over orthogonality.
 
-    where Δx_ortho reduces |cosphi| and Δx_small pushes circumcenters apart on small-link edges.
-    Returns (improved, zone_was_good) for stats; zone_was_good is False on early exit.
+    Returns
+    -------
+    improved : bool
+        ``True`` if the zone quality improved.
+    zone_was_good : bool
+        ``True`` if the zone already met thresholds before updating.
     """
     if not faces_zone:
         return (False, False)
@@ -2596,9 +2721,7 @@ def apply_combined_ortho_smoother_to_zone(
     return (improved, zone_already_good)
 
 
-# ---------------------------------------------------------------------------
 # Triangle-mesh entry point: orthogonalize (vert, tria) directly.
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -2624,22 +2747,43 @@ def orthogonalize_tria_mesh(
     jsferic: int = 1,
     smalllink_priority: bool = False,
 ) -> TriaOrthoResult:
-    """
-    Orthogonalize a pure triangle mesh, working directly on ``(vert, tria)``.
+    """Orthogonalize a pure triangle mesh in memory.
 
     Parameters
     ----------
-    vert : (N, 2) float array
-        Node coordinates: lon/lat degrees for ``jsferic=1``, projected x/y for
-        ``jsferic=0``.
-    tria : (T, 3) int array
+    vert : ndarray of shape (N, 2)
+        Node coordinates (lon/lat degrees or planar x/y per ``jsferic``).
+    tria : ndarray of shape (T, 3)
         0-based triangle connectivity.
+    cosphi_threshold : float, optional
+        Maximum allowed ``|cos φ|`` on internal flow links.
+    removesmalllinkstrsh : float, optional
+        Small flow-link threshold.
+    buffer_layers : int, optional
+        Zone buffer depth around bad edges.
+    max_global_iter : int, optional
+        Global orthogonalization passes.
+    smooth_iter : int, optional
+        Smoothing iterations per zone pass.
+    enable_edge_flips : bool, optional
+        Allow quality-guarded edge flips.
+    verbose : bool, optional
+        Log per-zone progress.
+    jsferic : int, optional
+        ``1`` for spherical lon/lat; ``0`` for planar coordinates.
+    smalllink_priority : bool, optional
+        Enable in-ortho small-link handling (flips + separation moves).
+
+    Returns
+    -------
+    TriaOrthoResult
+        Updated ``vert``/``tria`` plus ``max_cosphi``, ``n_small_flow_links``,
+        and ``n_zones_orthogonalized``.
 
     Notes
     -----
-    - Topology changes only when ``enable_edge_flips=True``, and only via local
-      edge flips inside convex quads (the mesh stays triangles).
-    - No merging into quads is performed here.
+    Topology changes only via local edge flips inside convex quads; no quad
+    merging is performed here.
     """
     vert = np.asarray(vert, dtype=np.float64)
     if vert.ndim != 2 or vert.shape[1] != 2:
