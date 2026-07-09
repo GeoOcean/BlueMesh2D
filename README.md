@@ -66,6 +66,31 @@ pip install -e .
 
 More examples available in [`BlueMath`](https://github.com/GeoOcean/BlueMath/tree/main/toolkit/mesh).
 
+### `QGIS Plugin`
+
+A **QGIS Processing plugin** exposes the raster-to-mesh part of `BlueMesh2D` as a
+set of Processing algorithms, so a bathymetry-to-mesh workflow can be run
+without writing any Python. It bundles its own copy of `bluemesh2d` and covers:
+
+1. **Extract water polygon** from a bathymetry raster (coastline / domain
+   extraction).
+2. **Build element-size raster (hfun)** — depth-polynomial, wavelength
+   (Hunt 1979), or a custom Python sizing function, gradient-limited.
+3. **Resample boundary** to the element size, producing an editable boundary
+   line layer.
+4. **Generate mesh from boundary** — Delaunay / Frontal-Delaunay refinement,
+   optional smoothing and `smood` orthogonalization (Delft3D-FM).
+5. **Generate boundary conditions** — classify the mesh boundary into
+   open / closed / island lines, editable directly in QGIS.
+6. **Export** — UGRID NetCDF (with or without Delft3D-FM open-boundary
+   `.pli`/`.bc`/`.ext` files) or ADCIRC `.grd`.
+
+Each stage's output is an ordinary QGIS layer (polygon, raster, or line), so
+intermediate results can be inspected and edited before the next step; an
+all-in-one algorithm is also available for a single-dialog run. See the
+plugin's own README (`bluemesh2d_qgis/README.md`) for installation and usage
+details.
+
 ### Contact
 
 For questions, bug reports, or feature requests, please open an issue on GitHub.
