@@ -2,12 +2,22 @@
 Delft3D-FM UGRID (xarray) builders, mixed tri/quad connectivity, and ADCIRC helpers.
 
 Used by :mod:`bluemesh2d.smood` and ``merge_circumcenters``.
+
+``xarray`` is imported lazily so the array-level helpers (``build_ugrid_arrays``,
+``calculate_edges``, ...) stay usable without it; only the ``xr.Dataset``
+builders (``adcirc2DFlowFM*``) require it.
 """
+from __future__ import annotations
+
 from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
+
+try:
+    import xarray as xr
+except ImportError:  # optional: only needed for the xr.Dataset builders
+    xr = None
 
 
 def _signed_area_tri_xy(xy: np.ndarray, i: int, j: int, k: int) -> float:
@@ -139,6 +149,12 @@ def validate_mixed_export_matches_smood_tria(
 
 def _xr_dataset_from_ugrid_dict(ugrid: dict) -> xr.Dataset:
     """Build the standard Delft3D-FM-style xarray Dataset from a ``build_ugrid_arrays*`` dict."""
+    if xr is None:
+        raise ImportError(
+            "xarray is required for the xr.Dataset builders (adcirc2DFlowFM*). "
+            "Either install xarray, or use build_ugrid_arrays() and write the "
+            "NetCDF yourself (e.g. with netCDF4)."
+        )
     node_z_out = -ugrid["node_z"]
     _WGS84_FILL = np.int32(-2147483647)
     _UGRID_FILL = np.int32(-999)
