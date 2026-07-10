@@ -147,12 +147,12 @@ interpreter QGIS uses:
 
 - **Windows** — open the *OSGeo4W Shell* and run:
   ```
-  python -m pip install rasterio netCDF4        # + triangle, xarray (optional)
+  python -m pip install rasterio netCDF4 xarray        # + triangle (optional)
   ```
 - **Linux / macOS** — install into the Python QGIS runs on (Debian/Ubuntu system
   Python needs `--break-system-packages` with `--user`):
   ```
-  python3 -m pip install --user rasterio netCDF4   # + triangle, xarray (optional)
+  python3 -m pip install --user rasterio netCDF4 xarray   # + triangle (optional)
   ```
 
 If `rasterio` clashes with QGIS's bundled GDAL on your platform, run the
