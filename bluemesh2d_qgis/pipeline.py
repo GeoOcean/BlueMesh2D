@@ -106,6 +106,79 @@ def _check(feedback):
         raise MeshCanceled()
 
 
+class _SubProgress:
+    """Feedback proxy mapping a sub-task's 0-100 progress into [lo, hi].
+
+    Lets a stage function report absolute progress while a multi-stage
+    caller (``generate_mesh``) keeps a monotonic overall bar.
+    """
+
+    def __init__(self, feedback, lo, hi):
+        self._fb = feedback
+        self._lo, self._hi = float(lo), float(hi)
+
+    def isCanceled(self):
+        return self._fb.isCanceled()
+
+    def pushInfo(self, msg):
+        self._fb.pushInfo(msg)
+
+    def pushWarning(self, msg):
+        self._fb.pushWarning(msg)
+
+    def setProgress(self, pct):
+        self._fb.setProgress(
+            self._lo + (self._hi - self._lo) * float(pct) / 100.0)
+
+
+def _available_ram_bytes():
+    """Available system RAM in bytes, or ``None`` when it cannot be found."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+    try:  # Linux fallback, no psutil needed
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return None
+
+
+def _warn_if_ram_risk(feedback, nbytes, what, hint=None):
+    """Warn when an estimated allocation may exhaust the available RAM.
+
+    Parameters
+    ----------
+    feedback : object
+        Feedback sink exposing ``pushWarning``.
+    nbytes : float
+        Estimated memory need (bytes).
+    what : str
+        Short description of the allocation, used in the message.
+    hint : str or None, optional
+        Extra sentence suggesting how to reduce the memory need.
+
+    Returns
+    -------
+    risky : bool
+        ``True`` when a warning was emitted.
+    """
+    avail = _available_ram_bytes()
+    if avail is None or nbytes < 0.5 * avail:
+        return False
+    msg = (f"{what} needs roughly {nbytes / 1e9:.1f} GB "
+           f"(~{avail / 1e9:.1f} GB of RAM available). QGIS may become "
+           "unresponsive or crash.")
+    if hint:
+        msg += " " + hint
+    feedback.pushWarning(msg)
+    return True
+
+
 def _raster_crs(src):
     """Build a pyproj CRS from an open rasterio dataset, robustly.
 
@@ -263,12 +336,22 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
 
     feedback.pushInfo("Reading raster ...")
     with rasterio.open(raster_path) as src:
+        # the raster is read whole and the contour extraction works on
+        # float copies: budget ~4x the in-memory band size
+        band_bytes = src.width * src.height * np.dtype(src.dtypes[0]).itemsize
+        _warn_if_ram_risk(
+            feedback, 4 * band_bytes,
+            f"Reading and contouring this raster ({src.width} x {src.height} px)",
+            hint="Clip the raster to the study area first (e.g. with GDAL "
+                 "'Clip raster by extent'), or provide a smaller domain "
+                 "extent polygon.")
         zdat = src.read(1)
         raster_crs = _raster_crs(src)
         w, h = src.width, src.height
         lon = (src.transform * (np.arange(w), np.zeros(w)))[0]
         lat = (src.transform * (np.zeros(h), np.arange(h)))[1]
     _check(feedback)
+    feedback.setProgress(15)
 
     if extent_geom is not None:
         # clip the raster to the extent's bbox BEFORE contour extraction: the
@@ -306,6 +389,7 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
         if deep:
             coast = coast.difference(MultiPolygon(deep))
     _check(feedback)
+    feedback.setProgress(60)
 
     feedback.pushInfo("Building domain extent ...")
     if extent_geom is not None:
@@ -316,6 +400,7 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
         if domain_buffer:
             domain = buffer_area(domain, domain_buffer)
     _check(feedback)
+    feedback.setProgress(85)
 
     if utm_crs == raster_crs:  # projected input: work natively in the tif CRS
         poly = coast.intersection(domain)
@@ -383,7 +468,8 @@ def _make_depth_hfun(depth_field, method="polynomial",
                      a=0.14, b=28.0,
                      wave_period=12.0, cells_per_wavelength=20, zmin=1.0,
                      custom_code=None,
-                     hmin=100.0, hmax=10000.0, detail=None, detail_hmin=None):
+                     hmin=100.0, hmax=10000.0, detail=None, detail_hmin=None,
+                     slope_ncells=None, slope_step=500.0, slope_hmin=None):
     """Build a depth-based mesh-size function, one of three sizing laws.
 
     All methods are floored at `hmin` (`detail_hmin` inside the `detail`
@@ -422,6 +508,19 @@ def _make_depth_hfun(depth_field, method="polynomial",
         of `hmin`. Default is ``None``.
     detail_hmin : float or None, optional
         Element-size floor (m) inside `detail`. Default is ``None``.
+    slope_ncells : float or None, optional
+        If given, the size is also limited by the bathymetric-slope term
+        ``h_slope = 2*pi*d / (slope_ncells * |grad d|)``, refining the mesh
+        where the bathymetry is steep (shelf break) with ~`slope_ncells`
+        cells across the slope feature. ``None`` (default) disables it.
+    slope_step : float, optional
+        Finite-difference step (m) used to estimate the depth gradient;
+        use roughly the bathymetry raster resolution. Default is 500.0.
+    slope_hmin : float or None, optional
+        Independent floor (m) for the slope term: the slope refinement
+        never asks for cells smaller than this, regardless of `hmin`.
+        ``None`` (default) leaves the slope term floored at `hmin` only
+        (via the final clip).
 
     Returns
     -------
@@ -444,6 +543,14 @@ def _make_depth_hfun(depth_field, method="polynomial",
         def detail_mask(xy):
             return shapely.contains_xy(detail, xy[:, 0], xy[:, 1])
 
+    def grad_mag(xy):
+        e = float(slope_step)
+        dzdx = (np.asarray(depth_field(xy + [e, 0.0]), dtype=float).reshape(-1)
+                - np.asarray(depth_field(xy - [e, 0.0]), dtype=float).reshape(-1)) / (2 * e)
+        dzdy = (np.asarray(depth_field(xy + [0.0, e]), dtype=float).reshape(-1)
+                - np.asarray(depth_field(xy - [0.0, e]), dtype=float).reshape(-1)) / (2 * e)
+        return np.hypot(dzdx, dzdy)
+
     def hfun(test):
         xy = np.atleast_2d(np.asarray(test, dtype=float))
         d = np.asarray(depth_field(xy), dtype=float).reshape(-1)
@@ -458,6 +565,12 @@ def _make_depth_hfun(depth_field, method="polynomial",
             values = np.asarray(custom(d, xy[:, 0], xy[:, 1]),
                                 dtype=float).reshape(-1)
             values = np.broadcast_to(values, d.shape).copy()
+        if slope_ncells is not None:
+            g = grad_mag(xy)
+            h_slope = 2.0 * np.pi * d / (slope_ncells * np.maximum(g, 1e-12))
+            if slope_hmin is not None:
+                h_slope = np.maximum(h_slope, slope_hmin)
+            values = np.minimum(values, h_slope)
         lo = np.full(xy.shape[0], hmin, dtype=float)
         if detail_mask is not None:
             lo[detail_mask(xy)] = detail_hmin
@@ -475,6 +588,7 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
                       hmin=100.0, hmax=10000.0,
                       detail_geom=None, detail_hmin=None,
                       domain_geom=None,
+                      slope_ncells=None, slope_step=None, slope_hmin=None,
                       max_gradient=0.1, cell_size=None,
                       extent_buffer=None, feedback=None):
     """Build the gradient-limited element-size field and save it as a GeoTIFF.
@@ -518,6 +632,15 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     domain_geom : shapely.geometry.base.BaseGeometry or None, optional
         Domain polygon in the *raster* CRS restricting the computed extent
         (e.g. the stage-1 water polygon). Default is ``None`` (whole raster).
+    slope_ncells : float or None, optional
+        Bathymetric-slope refinement, see :func:`_make_depth_hfun`.
+        ``None`` (default) disables it.
+    slope_step : float or None, optional
+        Finite-difference step (m) for the depth gradient; ``None``
+        (default) uses the raster pixel size in the working CRS.
+    slope_hmin : float or None, optional
+        Independent floor (m) for the slope term, see
+        :func:`_make_depth_hfun`. Default is ``None``.
     max_gradient : float, optional
         Maximum allowed size gradient (m/m), see ``smooth_precomput_hfun``.
         Default is 0.1.
@@ -564,13 +687,30 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
             reproject_geometry(geom, raster_crs, utm_crs)
 
     detail_u = _to_utm(detail_geom) if detail_geom is not None else None
+
+    if slope_ncells is not None and slope_step is None:
+        # raster pixel size in metres (working CRS), measured at the centre
+        cx = 0.5 * (lon[0] + lon[-1])
+        cy = 0.5 * (lat[0] + lat[-1])
+        px = abs(lon[1] - lon[0]) if len(lon) > 1 else abs(lat[1] - lat[0])
+        tr = pyproj.Transformer.from_crs(raster_crs, utm_crs, always_xy=True)
+        x0, y0 = tr.transform(cx, cy)
+        x1, y1 = tr.transform(cx + px, cy)
+        slope_step = float(np.hypot(x1 - x0, y1 - y0))
+        feedback.pushInfo(
+            f"Slope refinement on (N={slope_ncells:g}, "
+            f"gradient step {slope_step:.0f} m from the raster resolution).")
+
     hfun = _make_depth_hfun(depth_field, method=method, a=a, b=b,
                             wave_period=wave_period,
                             cells_per_wavelength=cells_per_wavelength,
                             zmin=zmin, custom_code=custom_code,
                             hmin=hmin, hmax=hmax,
                             detail=detail_u,
-                            detail_hmin=(detail_hmin if detail_u is not None else None))
+                            detail_hmin=(detail_hmin if detail_u is not None else None),
+                            slope_ncells=slope_ncells,
+                            slope_step=(slope_step if slope_step else 500.0),
+                            slope_hmin=slope_hmin)
     _check(feedback)
 
     # region to compute hfun over: the domain (water) polygon if given, else
@@ -581,12 +721,6 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     else:
         region = tuple(depth_field.bounds)
 
-    feedback.pushInfo("Gradient-limiting the size function (this can take a moment) ...")
-    hfuns = smooth_precomput_hfun(hfun, domain=region, max_gradient=max_gradient,
-                                  cell_size=cell_size, plot=False)
-    _check(feedback)
-
-    # ------------------------------- sample onto a regular UTM grid and save
     xmin, ymin, xmax, ymax = region
     dw, dh = xmax - xmin, ymax - ymin
     if cell_size is None:
@@ -599,11 +733,35 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
         margin = float(extent_buffer)
     xs = np.arange(xmin - margin, xmax + margin + cell_size, cell_size)
     ys = np.arange(ymax + margin, ymin - margin - cell_size, -cell_size)  # top->down
-    X, Y = np.meshgrid(xs, ys)
-    feedback.pushInfo(f"Sampling size raster {len(ys)} x {len(xs)} @ {cell_size:.0f} m ...")
-    H = np.asarray(hfuns(np.column_stack([X.ravel(), Y.ravel()])), dtype=np.float32)
-    H = H.reshape(X.shape)
+    # the gradient-limiting grid and the output raster are both ~this size;
+    # ~40 bytes/cell covers the working float64 arrays
+    _warn_if_ram_risk(
+        feedback, 40.0 * len(xs) * len(ys),
+        f"The element-size grid ({len(ys)} x {len(xs)} cells "
+        f"@ {cell_size:.0f} m)",
+        hint="Increase Min element size, reduce the domain / extent buffer, "
+             "or provide a water polygon to limit the computed area.")
+    feedback.setProgress(10)
+
+    feedback.pushInfo("Gradient-limiting the size function (this can take a moment) ...")
+    hfuns = smooth_precomput_hfun(hfun, domain=region, max_gradient=max_gradient,
+                                  cell_size=cell_size, plot=False)
     _check(feedback)
+    feedback.setProgress(55)
+
+    # ------------------------------- sample onto a regular UTM grid and save
+    feedback.pushInfo(f"Sampling size raster {len(ys)} x {len(xs)} @ {cell_size:.0f} m ...")
+    H = np.empty((len(ys), len(xs)), dtype=np.float32)
+    # sample in row blocks: bounded peak memory, cancellable, real progress
+    rows = max(1, int(2_000_000 // max(len(xs), 1)))
+    for i0 in range(0, len(ys), rows):
+        i1 = min(i0 + rows, len(ys))
+        Xc, Yc = np.meshgrid(xs, ys[i0:i1])
+        H[i0:i1] = np.asarray(
+            hfuns(np.column_stack([Xc.ravel(), Yc.ravel()])),
+            dtype=np.float32).reshape(i1 - i0, len(xs))
+        _check(feedback)
+        feedback.setProgress(55 + 40.0 * i1 / len(ys))
 
     transform = from_origin(xs[0] - cell_size / 2, ys[0] + cell_size / 2,
                             cell_size, cell_size)
@@ -820,6 +978,52 @@ def pslg_from_segments(segments, tol=1e-3, close_rings=True):
 # Stage 4: PSLG + hfun -> mesh -> UGRID NetCDF
 # ===========================================================================
 
+def _warn_if_mesh_too_big(node, edge, hfuns, feedback):
+    """Estimate the refined mesh size and warn when it looks RAM-risky.
+
+    The expected triangle count is ``~(2/sqrt(3)) * integral(dA / h^2)``,
+    evaluated by sampling `hfuns` on a coarse grid over the PSLG polygons.
+    Estimation errors are fine here -- this only decides whether to warn.
+    """
+    try:
+        import numpy as np
+        import shapely
+        from shapely.ops import polygonize
+
+        rings = polygonize(
+            [((node[a][0], node[a][1]), (node[b][0], node[b][1]))
+             for a, b in edge])
+        area_geom = shapely.unary_union(list(rings))
+        if area_geom.is_empty:
+            return
+        xmin, ymin, xmax, ymax = area_geom.bounds
+        n = 128
+        xs = np.linspace(xmin, xmax, n)
+        ys = np.linspace(ymin, ymax, n)
+        X, Y = np.meshgrid(xs, ys)
+        xy = np.column_stack([X.ravel(), Y.ravel()])
+        inside = shapely.contains_xy(area_geom, xy[:, 0], xy[:, 1])
+        if not inside.any():
+            return
+        h = np.asarray(hfuns(xy[inside]), dtype=float)
+        cell_area = area_geom.area / inside.sum()
+        n_tria = 2.0 / np.sqrt(3.0) * cell_area * np.sum(1.0 / h ** 2)
+        if n_tria > 500_000:
+            msg = (f"The size function implies roughly {n_tria / 1e6:.1f} "
+                   "million triangles; refinement may take a long time.")
+            est_bytes = 1000.0 * n_tria  # ~1 kB per triangle during refine/smooth
+            avail = _available_ram_bytes()
+            if avail is not None and est_bytes > 0.5 * avail:
+                msg += (f" Estimated memory ~{est_bytes / 1e9:.1f} GB of "
+                        f"~{avail / 1e9:.1f} GB available -- QGIS may become "
+                        "unresponsive or crash.")
+            msg += (" Consider increasing Min element size or reducing the "
+                    "domain.")
+            feedback.pushWarning(msg)
+    except Exception:
+        pass  # a failed estimate must never block the run
+
+
 def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
               do_smood=False, smood_merge_small_links=False, feedback=None):
     """Refine a PSLG, then optionally smooth and/or smood it.
@@ -863,17 +1067,22 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
     if kind not in ("delaunay", "delfront"):
         raise ValueError("kind must be 'delaunay' or 'delfront'")
 
+    _warn_if_mesh_too_big(node, edge, hfuns, feedback)
+    feedback.setProgress(5)
+
     feedback.pushInfo(f"Refining mesh ({len(node)} boundary nodes, kind={kind}) ...")
     with contextlib.redirect_stdout(_LogWriter(feedback)):
         vert, etri, tria, tnum = refine(node, edge, [], {"kind": kind}, hfuns)
     _check(feedback)
     feedback.pushInfo(f"Refined: {len(vert)} nodes, {len(tria)} triangles")
+    feedback.setProgress(55)
 
     if do_smooth:
         feedback.pushInfo("Smoothing mesh ...")
         with contextlib.redirect_stdout(_LogWriter(feedback)):
             vert, etri, tria, tnum = smooth(vert, etri, tria, tnum, {}, hfuns)
         _check(feedback)
+        feedback.setProgress(85)
 
     if do_smood:
         missing = smood_dependencies()
@@ -1432,6 +1641,155 @@ def classify_boundary_lines(vert, tria, z_depth, zlim=20.0):
     return out
 
 
+def classify_boundary_points(vert, tria, z_depth, zlim=20.0):
+    """Classify each mesh boundary node as open / closed / island.
+
+    The boundary free edges are assembled into loops (see
+    :func:`_boundary_loops`). Loops contained inside another loop are
+    *islands* (every node tagged ``'island'``). On outer loops, a node is
+    ``'open'`` where its depth exceeds `zlim`, otherwise ``'closed'``.
+
+    Parameters
+    ----------
+    vert : ndarray of shape (N, 2)
+        Node coordinates (mesh CRS).
+    tria : ndarray of shape (T, 3)
+        Triangle connectivity (0-based).
+    z_depth : ndarray of shape (N,)
+        Node depth (positive down), as returned by :func:`read_ugrid_mesh`.
+    zlim : float, optional
+        Depth threshold (m); outer-boundary nodes deeper than `zlim` are
+        open. Default is 20.0.
+
+    Returns
+    -------
+    loops : list of dict
+        One dict per boundary loop, with keys ``'coords'`` (``(n, 2)``
+        node coordinates, in walk order, first node not repeated),
+        ``'btype'`` (list of ``n`` strings), ``'depth'`` (list of ``n``
+        floats) and ``'island'`` (bool).
+    """
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    loops = _boundary_loops(vert, tria)
+    polys = [Polygon(vert[lp]) if len(lp) >= 3 else None for lp in loops]
+
+    # a loop is an island if it lies inside another (larger) loop
+    is_island = [False] * len(loops)
+    for i, pi in enumerate(polys):
+        if pi is None or not pi.is_valid:
+            continue
+        for j, pj in enumerate(polys):
+            if i == j or pj is None or not pj.is_valid:
+                continue
+            if pj.area > pi.area and pj.contains(pi.representative_point()):
+                is_island[i] = True
+                break
+
+    out = []
+    for lp, island in zip(loops, is_island):
+        depths = [float(z_depth[k]) for k in lp]
+        if island:
+            btype = ["island"] * len(lp)
+        else:
+            btype = ["open" if d > zlim else "closed" for d in depths]
+        out.append({"coords": np.asarray(vert[lp], dtype=float),
+                    "btype": btype, "depth": depths, "island": island})
+    return out
+
+
+def boundary_lines_from_points(loops):
+    """Rebuild open / closed / island polylines from per-node classifications.
+
+    Inverse companion of :func:`classify_boundary_points`, applied after the
+    user has edited node types: consecutive edges of the same class form one
+    polyline. An edge takes the type of its two nodes when they agree; at an
+    open/other transition the edge is not open (the ``.pli`` open boundary
+    only spans fully-open stretches), otherwise it takes its first node's
+    type.
+
+    Parameters
+    ----------
+    loops : list of (ndarray of shape (n, 2), list of str)
+        Per loop: node coordinates in walk order (first node not repeated)
+        and one type string per node.
+
+    Returns
+    -------
+    lines : dict of {str: list of ndarray}
+        Type -> list of ``(M, 2)`` coordinate polylines, as in
+        :func:`classify_boundary_lines`.
+    """
+    import numpy as np
+
+    out = {}
+    for coords, btype in loops:
+        coords = np.asarray(coords, dtype=float)
+        n = len(coords)
+        if n < 2:
+            continue
+
+        def edge_type(k):
+            a, b = btype[k], btype[(k + 1) % n]
+            if a == b:
+                return a
+            if a == "open":
+                return b
+            if b == "open":
+                return a
+            return a
+
+        tags = [edge_type(k) for k in range(n)]
+        if all(t == tags[0] for t in tags):
+            ring = np.vstack([coords, coords[:1]])
+            out.setdefault(tags[0], []).append(ring)
+            continue
+
+        # rotate so the walk starts at a class transition (avoids wrap-around)
+        start = next(k for k in range(n) if tags[k] != tags[k - 1])
+        eord = [(start + k) % n for k in range(n)]
+        runs = [[eord[0]]]
+        for e in eord[1:]:
+            if tags[e] == tags[runs[-1][-1]]:
+                runs[-1].append(e)
+            else:
+                runs.append([e])
+        for run in runs:
+            node_seq = [run[0]] + [(e + 1) % n for e in run]
+            out.setdefault(tags[run[0]], []).append(coords[node_seq])
+    return out
+
+
+def generate_boundary_condition_points(nc_path, zlim=20.0, feedback=None):
+    """Classify each mesh boundary node as open / closed / island.
+
+    Parameters
+    ----------
+    nc_path : str
+        Path to a UGRID NetCDF written by :func:`export_ugrid`.
+    zlim : float, optional
+        Depth threshold (m) for the initial open/closed split. Default 20.0.
+    feedback : object or None, optional
+        Feedback sink, see :func:`extract_water_polygon`.
+
+    Returns
+    -------
+    loops : list of dict
+        See :func:`classify_boundary_points`.
+    """
+    feedback = feedback or _NullFeedback()
+    vert, tria, z_depth = read_ugrid_mesh(nc_path)
+    feedback.pushInfo(f"Classifying boundary (open where depth > {zlim} m) ...")
+    loops = classify_boundary_points(vert, tria, z_depth, zlim=zlim)
+    n_island = sum(1 for lp in loops if lp["island"])
+    n_pts = sum(len(lp["btype"]) for lp in loops)
+    feedback.pushInfo(
+        f"Boundary points: {n_pts} on {len(loops)} loop(s) "
+        f"({n_island} island).")
+    return loops
+
+
 def generate_boundary_conditions(nc_path, zlim=20.0, feedback=None):
     """Classify a mesh's boundary into open / closed / island polylines.
 
@@ -1457,6 +1815,67 @@ def generate_boundary_conditions(nc_path, zlim=20.0, feedback=None):
         f"Boundary lines: {len(lines['open'])} open, "
         f"{len(lines['closed'])} closed, {len(lines['island'])} island.")
     return lines
+
+
+def write_open_boundary_pli(out_dir, open_lines, pli_name="Boundary01",
+                            feedback=None):
+    """Write a Delft3D-FM ``.pli`` polyline file from open boundary polylines.
+
+    Parameters
+    ----------
+    out_dir : str
+        Output directory.
+    open_lines : list of array_like of shape (M, 2)
+        Open-boundary polylines (coordinates), e.g. the ``'open'`` features of
+        the stage-5 boundary-condition layer.
+    pli_name : str, optional
+        Base name for the ``.pli`` file. Default ``'Boundary01'``.
+    feedback : object or None, optional
+        Feedback sink, see :func:`extract_water_polygon`.
+
+    Returns
+    -------
+    pli_path : str
+        Path to the written file.
+    boundary_ids : list of list of str
+        Per-line lists of the boundary point ids written to the ``.pli``
+        file, in the same order/nesting as `open_lines` -- for use e.g. when
+        writing matching ``.bc`` forcing blocks.
+
+    Raises
+    ------
+    RuntimeError
+        If `open_lines` is empty.
+    """
+    import os
+    import numpy as np
+
+    feedback = feedback or _NullFeedback()
+    lines = [np.atleast_2d(np.asarray(ln, dtype=float)) for ln in open_lines
+             if len(ln) >= 2]
+    if not lines:
+        raise RuntimeError(
+            "No open boundary polyline provided; classify one in "
+            "'5 - Generate boundary conditions' (or lower the depth threshold).")
+
+    pli_path = os.path.join(out_dir, f"{pli_name}.pli")
+    idx = 0
+    boundary_ids = []
+    with open(pli_path, "w") as f_pli:
+        for li, line in enumerate(lines):
+            block = pli_name if len(lines) == 1 else f"{pli_name}_{li:03d}"
+            f_pli.write(f"{block}\n")
+            f_pli.write(f"    {len(line)}    2\n")
+            ids = []
+            for xi, yi in line:
+                boundary_id = f"{pli_name}_{idx:04d}"
+                idx += 1
+                ids.append(boundary_id)
+                f_pli.write(f"{xi:.15E}  {yi:.15E} {boundary_id}\n")
+            boundary_ids.append(ids)
+
+    feedback.pushInfo(f"Open boundary file: {pli_path}")
+    return pli_path, boundary_ids
 
 
 def write_open_boundary_files(out_dir, open_lines, pli_name="Boundary01",
@@ -1488,30 +1907,15 @@ def write_open_boundary_files(out_dir, open_lines, pli_name="Boundary01",
         If `open_lines` is empty.
     """
     import os
-    import numpy as np
 
     feedback = feedback or _NullFeedback()
-    lines = [np.atleast_2d(np.asarray(ln, dtype=float)) for ln in open_lines
-             if len(ln) >= 2]
-    if not lines:
-        raise RuntimeError(
-            "No open boundary polyline provided; classify one in "
-            "'5 - Generate boundary conditions' (or lower the depth threshold).")
+    pli_path, boundary_ids = write_open_boundary_pli(
+        out_dir, open_lines, pli_name=pli_name, feedback=feedback)
 
-    pli_path = os.path.join(out_dir, f"{pli_name}.pli")
     bc_path = os.path.join(out_dir, f"{bc_name}.bc")
-    ext_path = os.path.join(out_dir, f"{ext_name}.ext")
-
-    idx = 0
-    with open(pli_path, "w") as f_pli, open(bc_path, "w") as f_bc:
-        for li, line in enumerate(lines):
-            block = pli_name if len(lines) == 1 else f"{pli_name}_{li:03d}"
-            f_pli.write(f"{block}\n")
-            f_pli.write(f"    {len(line)}    2\n")
-            for xi, yi in line:
-                boundary_id = f"{pli_name}_{idx:04d}"
-                idx += 1
-                f_pli.write(f"{xi:.15E}  {yi:.15E} {boundary_id}\n")
+    with open(bc_path, "w") as f_bc:
+        for ids in boundary_ids:
+            for boundary_id in ids:
                 f_bc.write("[forcing]\n")
                 f_bc.write(f"Name = {boundary_id}\n")
                 f_bc.write("Function = timeseries\n")
@@ -1523,6 +1927,7 @@ def write_open_boundary_files(out_dir, open_lines, pli_name="Boundary01",
                 f_bc.write("0    0\n")
                 f_bc.write("9999999999   0\n\n")
 
+    ext_path = os.path.join(out_dir, f"{ext_name}.ext")
     with open(ext_path, "w") as f:
         f.write("[general]\n")
         f.write("fileVersion=2.01\n")
@@ -1764,7 +2169,8 @@ def generate_mesh(config: MeshConfig, feedback=None) -> MeshResult:
     poly, utm_crs, raster_crs = extract_water_polygon(
         config.raster_path, coast_zmax=config.coast_zmax,
         domain_buffer=config.domain_buffer,
-        keep_largest=config.keep_largest, feedback=feedback)
+        keep_largest=config.keep_largest,
+        feedback=_SubProgress(feedback, 2, 25))
     feedback.pushInfo(f"Working CRS: {utm_crs.to_string() if hasattr(utm_crs, 'to_string') else utm_crs}")
 
     # In-memory hfun (no raster round-trip needed for the all-in-one run)
@@ -1797,7 +2203,7 @@ def generate_mesh(config: MeshConfig, feedback=None) -> MeshResult:
                            do_smooth=config.do_smooth,
                            do_smood=config.do_smood,
                            smood_merge_small_links=config.smood_merge_small_links,
-                           feedback=feedback)
+                           feedback=_SubProgress(feedback, 55, 88))
 
     feedback.setProgress(88)
     export_ugrid(vert, tria, config.raster_path, utm_crs,

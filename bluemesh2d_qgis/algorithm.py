@@ -13,7 +13,7 @@ Algorithms
 ``GenerateMeshFromBoundaryAlgorithm``
     Boundary + hfun -> refine/smooth[/smood] -> UGRID mesh (stage 4).
 ``GenerateBoundaryConditionsAlgorithm``
-    Mesh -> editable open/closed/island boundary line layer (stage 5).
+    Mesh -> editable open/closed/island boundary point layer (stage 5).
 ``ExportUgridAlgorithm``, ``ExportUgridBoundaryAlgorithm``, ``ExportGrdAlgorithm``
     Mesh (+ boundary conditions) -> plain UGRID NetCDF, UGRID NetCDF + open
     boundary condition, or ADCIRC ``.grd`` (stage 6, group "6 - Export").
@@ -57,12 +57,13 @@ from qgis.core import (
 from .pipeline import (
     MeshCanceled,
     MeshConfig,
+    boundary_lines_from_points,
     build_hfun_raster,
     check_dependencies,
     export_grd_from_lines,
     export_ugrid,
     extract_water_polygon,
-    generate_boundary_conditions,
+    generate_boundary_condition_points,
     generate_mesh,
     load_hfun_raster,
     mesh_pslg,
@@ -70,6 +71,7 @@ from .pipeline import (
     resample_boundary,
     smood_dependencies,
     write_open_boundary_files,
+    write_open_boundary_pli,
 )
 
 # No sub-group: algorithms sit directly under the BlueMesh2D provider node.
@@ -280,7 +282,7 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterRasterLayer(
             self.RASTER, "Bathymetry raster (elevation, positive up)"))
-        _num(self, self.COAST_ZMAX, "Coastline level / wet threshold (m)", 2.0, -1e4, 1e4)
+        _num(self, self.COAST_ZMAX, "Coastline level / wet threshold (m)", 0.0, -1e4, 1e4)
         self.addParameter(QgsProcessingParameterNumber(
             self.DEEP_ZMAX, "Deep level (m, optional; e.g. -300 keeps z > -300)",
             QgsProcessingParameterNumber.Double, optional=True,
@@ -366,6 +368,9 @@ class _BuildHfunBase(_BaseAlg):
     HMIN = "HMIN"
     HMAX = "HMAX"
     DETAIL_HMIN = "DETAIL_HMIN"
+    SLOPE = "SLOPE"
+    SLOPE_NCELLS = "SLOPE_NCELLS"
+    SLOPE_HMIN = "SLOPE_HMIN"
     MAX_GRADIENT = "MAX_GRADIENT"
     EXTENT_BUFFER = "EXTENT_BUFFER"
     OUTPUT = "OUTPUT"
@@ -393,9 +398,18 @@ class _BuildHfunBase(_BaseAlg):
             [QgsProcessing.TypeVectorPolygon], optional=True))
 
     def _add_limits(self):
-        _num(self, self.HMIN, "Min element size (m)", 100.0, 0.1)
+        _num(self, self.HMIN, "Min element size (m)", 500.0, 0.1)
         _num(self, self.HMAX, "Max element size (m)", 10000.0, 1.0)
-        _num(self, self.DETAIL_HMIN, "Detail min element size (m)", 30.0, 0.1)
+        _num(self, self.DETAIL_HMIN, "Detail min element size (m)", 100.0, 0.1)
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.SLOPE,
+            "Refine on bathymetric slope (shelf break)",
+            defaultValue=False))
+        _num(self, self.SLOPE_NCELLS,
+             "Slope cells N (cells across a slope feature)", 15.0, 1.0, 1000.0)
+        _num(self, self.SLOPE_HMIN,
+             "Slope min element size (m; 0 = use Min element size)",
+             0.0, 0.0, 1e7)
         _num(self, self.MAX_GRADIENT, "Max size gradient (m/m)", 0.1, 1e-3, 10.0)
         _num(self, self.EXTENT_BUFFER,
              "Buffer around the computed area (m; -1 = automatic)",
@@ -405,6 +419,10 @@ class _BuildHfunBase(_BaseAlg):
 
     def _method_kwargs(self, parameters, context):
         return {}  # subclass: method-specific kwargs for build_hfun_raster
+
+    def postProcessAlgorithm(self, context, feedback):
+        _style_hfun_raster(getattr(self, "_dest", None), context, feedback)
+        return {self.OUTPUT: getattr(self, "_dest", None)}
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -427,6 +445,14 @@ class _BuildHfunBase(_BaseAlg):
             if detail_geom is None:
                 fb.pushWarning("Detail layer has no usable geometry; ignoring it.")
 
+        slope_ncells = None
+        slope_hmin = None
+        if self.parameterAsBoolean(parameters, self.SLOPE, context):
+            slope_ncells = self.parameterAsDouble(
+                parameters, self.SLOPE_NCELLS, context)
+            v = self.parameterAsDouble(parameters, self.SLOPE_HMIN, context)
+            slope_hmin = v if v > 0 else None
+
         try:
             build_hfun_raster(
                 raster.source(), out_path,
@@ -436,6 +462,8 @@ class _BuildHfunBase(_BaseAlg):
                 detail_geom=detail_geom,
                 detail_hmin=self.parameterAsDouble(parameters, self.DETAIL_HMIN, context),
                 domain_geom=domain_geom,
+                slope_ncells=slope_ncells,
+                slope_hmin=slope_hmin,
                 max_gradient=self.parameterAsDouble(parameters, self.MAX_GRADIENT, context),
                 extent_buffer=self.parameterAsDouble(parameters, self.EXTENT_BUFFER, context),
                 feedback=fb,
@@ -444,6 +472,7 @@ class _BuildHfunBase(_BaseAlg):
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
             raise QgsProcessingException(f"hfun raster failed: {exc}")
+        self._dest = out_path
         return {self.OUTPUT: out_path}
 
 
@@ -460,10 +489,14 @@ class BuildHfunPolynomialAlgorithm(_BuildHfunBase):
 
     def shortHelpString(self):
         return ("Element-size raster from a depth polynomial:  h = a*d^2 + b*d  "
-                "(d = depth in m, >= 0). The result is floored at Min element "
-                "size (Detail min size inside the detail polygons), capped at "
-                "Max element size, then gradient-limited. Saved as a GeoTIFF in "
-                "the working CRS; feeds stages 3 and 4.")
+                "(d = depth in m, >= 0). Optionally also refine on the "
+                "bathymetric slope:  h_slope = 2*pi*d / (N*|grad d|)  puts "
+                "~N cells across steep features (shelf break) and has no "
+                "effect where the seabed is flat. The result is floored at "
+                "Min element size (Detail min size inside the detail "
+                "polygons), capped at Max element size, then "
+                "gradient-limited. Saved as a GeoTIFF in the working CRS; "
+                "feeds stages 3 and 4.")
 
     def initAlgorithm(self, config=None):
         self._add_inputs()
@@ -492,9 +525,11 @@ class BuildHfunWavelengthAlgorithm(_BuildHfunBase):
     def shortHelpString(self):
         return ("Element-size raster from the local wavelength:  h = L(T, d)/N, "
                 "with L from the Hunt (1979) dispersion relation (wave period T, "
-                "N cells per wavelength, depth floored at the min depth). The "
-                "result is floored at Min element size, capped at Max, then "
-                "gradient-limited. Feeds stages 3 and 4.")
+                "N cells per wavelength, depth floored at the min depth). "
+                "Optionally also refine on the bathymetric slope (shelf "
+                "break), see '2a - Depth polynomial'. The result is floored "
+                "at Min element size, capped at Max, then gradient-limited. "
+                "Feeds stages 3 and 4.")
 
     def initAlgorithm(self, config=None):
         self._add_inputs()
@@ -531,9 +566,11 @@ class BuildHfunCustomAlgorithm(_BuildHfunBase):
     def shortHelpString(self):
         return ("Element-size raster from custom Python: an expression using d "
                 "(depth m, >= 0), x, y (UTM m) and np -- e.g. np.sqrt(9.81*d)*60 "
-                "-- or a block defining  def hfun(d, x, y): return ... . The "
-                "result is floored at Min element size, capped at Max, then "
-                "gradient-limited. Feeds stages 3 and 4.")
+                "-- or a block defining  def hfun(d, x, y): return ... . "
+                "Optionally also refine on the bathymetric slope (shelf "
+                "break), see '2a - Depth polynomial'. The result is floored "
+                "at Min element size, capped at Max, then gradient-limited. "
+                "Feeds stages 3 and 4.")
 
     def initAlgorithm(self, config=None):
         self._add_inputs()
@@ -840,7 +877,12 @@ def _mesh_source_path(layer):
 
 
 def _boundary_lines_by_type(source, target_crs):
-    """Return ``{btype: [ (M,2) arrays ]}`` from a boundary line source.
+    """Return ``{btype: [ (M,2) arrays ]}`` from a boundary conditions source.
+
+    Accepts either the point layer produced by stage 5 (one feature per
+    boundary node, with ``loop``/``seq``/``btype`` attributes -- polylines
+    are rebuilt from consecutive nodes of the same type) or a legacy line
+    layer with one ``btype`` per feature.
 
     Geometries are reprojected to `target_crs` (a
     ``QgsCoordinateReferenceSystem``) so they line up with the mesh nodes.
@@ -854,7 +896,35 @@ def _boundary_lines_by_type(source, target_crs):
     if target_crs is not None and src_crs.isValid() and src_crs != target_crs:
         xform = QgsCoordinateTransform(src_crs, target_crs, QgsProject.instance())
 
-    has_btype = "btype" in [f.name() for f in source.fields()]
+    field_names = [f.name() for f in source.fields()]
+    has_btype = "btype" in field_names
+
+    if QgsWkbTypes.geometryType(source.wkbType()) == QgsWkbTypes.PointGeometry:
+        if "loop" not in field_names or "seq" not in field_names:
+            raise QgsProcessingException(
+                "The boundary point layer must have 'loop' and 'seq' "
+                "attributes (as produced by '5 - Generate boundary "
+                "conditions').")
+        loops = {}
+        for feat in source.getFeatures():
+            g = feat.geometry()
+            if g is None or g.isEmpty():
+                continue
+            if xform is not None:
+                g = QgsGeometry(g)
+                g.transform(xform)
+            p = g.asPoint()
+            bt = str(feat["btype"]) if has_btype else "closed"
+            loops.setdefault(int(feat["loop"]), []).append(
+                (int(feat["seq"]), (p.x(), p.y()), bt))
+        ordered = []
+        for pts in loops.values():
+            pts.sort(key=lambda t: t[0])
+            ordered.append(
+                (np.asarray([c for _, c, _ in pts], dtype=float),
+                 [b for _, _, b in pts]))
+        return boundary_lines_from_points(ordered)
+
     out = {}
     for feat in source.getFeatures():
         g = feat.geometry()
@@ -873,32 +943,54 @@ def _boundary_lines_by_type(source, target_crs):
     return out
 
 
-def _style_boundary_conditions(dest, context, feedback):
-    """Categorize the boundary-condition layer by ``btype`` with vertex dots."""
+def _style_hfun_raster(dest, context, feedback):
+    """Style the hfun raster as singleband pseudocolor, linear, Blues ramp."""
     try:
         from qgis.core import (
-            QgsCategorizedSymbolRenderer, QgsLineSymbol,
-            QgsMarkerLineSymbolLayer, QgsMarkerSymbol, QgsProcessingUtils,
-            QgsRendererCategory,
+            QgsColorRampShader, QgsProcessingUtils, QgsRasterShader,
+            QgsSingleBandPseudoColorRenderer, QgsStyle,
         )
         layer = QgsProcessingUtils.mapLayerFromString(dest, context)
         if layer is None:
             return
 
-        def sym(line_color, dot_color):
-            s = QgsLineSymbol.createSimple(
-                {"line_color": line_color, "line_width": "0.6"})
-            ml = QgsMarkerLineSymbolLayer()
-            try:
-                from qgis.core import Qgis
-                ml.setPlacement(Qgis.MarkerLinePlacement.Vertex)
-            except Exception:
-                ml.setPlacement(QgsMarkerLineSymbolLayer.Vertex)
-            ml.setSubSymbol(QgsMarkerSymbol.createSimple(
-                {"name": "circle", "color": dot_color,
-                 "outline_style": "no", "size": "1.4"}))
-            s.appendSymbolLayer(ml)
-            return s
+        ramp = QgsStyle.defaultStyle().colorRamp("Blues")
+        if ramp is None:
+            return
+
+        provider = layer.dataProvider()
+        stats = provider.bandStatistics(1)
+        vmin, vmax = stats.minimumValue, stats.maximumValue
+
+        shader = QgsRasterShader()
+        renderer = QgsSingleBandPseudoColorRenderer(provider, 1, shader)
+        renderer.setClassificationMin(vmin)
+        renderer.setClassificationMax(vmax)
+        renderer.createShader(
+            ramp, QgsColorRampShader.Interpolated, QgsColorRampShader.Continuous)
+
+        layer.setRenderer(renderer)
+        layer.triggerRepaint()
+    except Exception as exc:
+        feedback.pushInfo(f"Could not style hfun raster: {exc}")
+
+
+def _style_boundary_conditions(dest, context, feedback):
+    """Categorize the boundary-condition point layer by ``btype``."""
+    try:
+        from qgis.core import (
+            QgsCategorizedSymbolRenderer, QgsMarkerSymbol,
+            QgsProcessingUtils, QgsRendererCategory,
+        )
+        layer = QgsProcessingUtils.mapLayerFromString(dest, context)
+        if layer is None:
+            return
+
+        def sym(color, outline_color):
+            return QgsMarkerSymbol.createSimple(
+                {"name": "circle", "color": color,
+                 "outline_color": outline_color, "outline_width": "0.2",
+                 "size": "1.8"})
 
         cats = [
             QgsRendererCategory("open", sym("227,26,28,255", "153,0,0,255"),
@@ -909,6 +1001,15 @@ def _style_boundary_conditions(dest, context, feedback):
                                 "island"),
         ]
         layer.setRenderer(QgsCategorizedSymbolRenderer("btype", cats))
+
+        # edit 'btype' with a drop-down list instead of free text
+        idx = layer.fields().indexOf("btype")
+        if idx >= 0:
+            from qgis.core import QgsEditorWidgetSetup
+            layer.setEditorWidgetSetup(idx, QgsEditorWidgetSetup(
+                "ValueMap",
+                {"map": {"open": "open", "closed": "closed",
+                         "island": "island"}}))
         layer.triggerRepaint()
     except Exception as exc:
         feedback.pushInfo(f"Could not style boundary layer: {exc}")
@@ -932,14 +1033,16 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
         return "5 - Generate boundary conditions"
 
     def shortHelpString(self):
-        return ("Classify the mesh (stage 4) boundary into editable line "
-                "features: open boundary (offshore, mean depth above the "
+        return ("Classify each mesh (stage 4) boundary node into an editable "
+                "point feature: open boundary (offshore, depth above the "
                 "threshold), closed boundary (land on the outer boundary) and "
-                "islands (interior coastline loops). The output is one line "
+                "islands (interior coastline loops). The output is one point "
                 "layer with a 'btype' attribute (open / closed / island), "
-                "styled by type with visible vertex dots. Edit it with the "
-                "Vertex Tool and by changing 'btype' (e.g. reclassify a segment "
-                "from closed to open), then feed it to '6 - Export'.")
+                "colored by type. Select points on the map and change their "
+                "'btype' in the attribute table (drop-down list) to "
+                "reclassify them, then feed the layer to '6 - Export' -- the "
+                "export rebuilds continuous boundary lines from consecutive "
+                "points of the same type.")
 
     def createInstance(self):
         return GenerateBoundaryConditionsAlgorithm()
@@ -947,20 +1050,19 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterMeshLayer(
             self.MESH, "Mesh layer (from stage 4)"))
-        _num(self, self.ZLIM, "Open boundary depth threshold (m)", 20.0, -1e4, 1e5)
+        _num(self, self.ZLIM, "Open boundary depth threshold (m)", 0.0, -1e4, 1e5)
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, "Boundary conditions", QgsProcessing.TypeVectorLine))
+            self.OUTPUT, "Boundary conditions", QgsProcessing.TypeVectorPoint))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
-        import numpy as np
         fb = _FeedbackAdapter(feedback)
         layer = self.parameterAsMeshLayer(parameters, self.MESH, context)
         src_path = _mesh_source_path(layer)
         crs = layer.crs()
 
         try:
-            lines = generate_boundary_conditions(
+            loops = generate_boundary_condition_points(
                 src_path,
                 zlim=self.parameterAsDouble(parameters, self.ZLIM, context),
                 feedback=fb)
@@ -971,22 +1073,23 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
 
         fields = QgsFields()
         fields.append(QgsField("id", QVariant.Int))
+        fields.append(QgsField("loop", QVariant.Int))
+        fields.append(QgsField("seq", QVariant.Int))
         fields.append(QgsField("btype", QVariant.String))
-        fields.append(QgsField("npoints", QVariant.Int))
+        fields.append(QgsField("depth", QVariant.Double))
         sink, dest = self.parameterAsSink(
-            parameters, self.OUTPUT, context, fields, QgsWkbTypes.LineString, crs)
+            parameters, self.OUTPUT, context, fields, QgsWkbTypes.Point, crs)
 
         fid = 0
-        for btype in ("open", "closed", "island"):
-            for coords in lines.get(btype, []):
-                coords = np.asarray(coords, dtype=float)
-                wkt = "LINESTRING(" + ", ".join(f"{x} {y}" for x, y in coords) + ")"
+        for loop_id, loop in enumerate(loops):
+            for seq, ((x, y), btype, depth) in enumerate(
+                    zip(loop["coords"], loop["btype"], loop["depth"])):
                 f = QgsFeature(fields)
-                f.setGeometry(QgsGeometry.fromWkt(wkt))
-                f.setAttributes([fid, btype, len(coords)])
+                f.setGeometry(QgsGeometry.fromWkt(f"POINT({x} {y})"))
+                f.setAttributes([fid, loop_id, seq, btype, depth])
                 sink.addFeature(f)
                 fid += 1
-        fb.pushInfo(f"Boundary features written: {fid}")
+        fb.pushInfo(f"Boundary points written: {fid}")
 
         self._dest = dest
         return {self.OUTPUT: dest}
@@ -1019,10 +1122,10 @@ class ExportUgridAlgorithm(_ExportBase):
         return "6a - Export UGRID (.nc)"
 
     def shortHelpString(self):
-        return ("Save the mesh (stage 4) as a UGRID NetCDF, with no boundary "
-                "condition files -- the simple default export. For Delft3D-FM "
-                "open-boundary files (.pli/.bc/.ext), use "
-                "'6b - Export UGRID + open boundary condition' instead.")
+        return ("Save the mesh (stage 4) as a UGRID NetCDF -- the simple "
+                "default export. For Delft3D-FM open-boundary files "
+                "(.pli/.bc/.ext), use "
+                "'6b - Export open boundary condition (.pli / .bc)' instead.")
 
     def createInstance(self):
         return ExportUgridAlgorithm()
@@ -1053,66 +1156,67 @@ class ExportUgridAlgorithm(_ExportBase):
 
 
 class ExportUgridBoundaryAlgorithm(_ExportBase):
-    MESH = "MESH"
     BOUNDARY = "BOUNDARY"
+    WRITE_BC = "WRITE_BC"
     OUTPUT = "OUTPUT"
 
     def name(self):
         return "export_ugrid_boundary"
 
     def displayName(self):
-        return "6b - Export UGRID (.nc) + open boundary condition"
+        return "6b - Export open boundary condition (.pli / .bc)"
 
     def shortHelpString(self):
-        return ("Save the mesh (stage 4) as a UGRID NetCDF and, from the "
-                "boundary conditions (stage 5), write the Delft3D-FM "
-                "open-boundary files next to it: Boundary01.pli (one polyline "
-                "per 'open' feature), Riemann.bc (a Riemann time-series stanza "
-                "per point) and FlowFM_bnd.ext. For a plain mesh export with "
-                "no boundary files, use '6a - Export UGRID (.nc)' instead.")
+        return ("From the boundary conditions layer (stage 5), write the "
+                "Delft3D-FM open-boundary files: a .pli polyline file (one "
+                "polyline per 'open' feature) and, optionally, the matching "
+                ".bc (Riemann time-series stanza per point) and .ext files. "
+                "For the mesh NetCDF export, use '6a - Export UGRID (.nc)'.")
 
     def createInstance(self):
         return ExportUgridBoundaryAlgorithm()
 
     def initAlgorithm(self, config=None):
-        self.addParameter(QgsProcessingParameterMeshLayer(
-            self.MESH, "Mesh layer (from stage 4)"))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.BOUNDARY, "Boundary conditions (from stage 5)",
-            [QgsProcessing.TypeVectorLine]))
+            [QgsProcessing.TypeVectorPoint, QgsProcessing.TypeVectorLine]))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.WRITE_BC,
+            "Also write .bc / .ext (Riemann boundary condition)",
+            defaultValue=True))
         self.addParameter(QgsProcessingParameterFileDestination(
-            self.OUTPUT, "Output mesh (UGRID NetCDF)", fileFilter="NetCDF (*.nc)"))
+            self.OUTPUT, "Output open boundary (.pli)", fileFilter="PLI (*.pli)"))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
         import os
-        import shutil
         fb = _FeedbackAdapter(feedback)
 
-        layer = self.parameterAsMeshLayer(parameters, self.MESH, context)
-        src_path = _mesh_source_path(layer)
-        out_path = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
         boundary = self.parameterAsSource(parameters, self.BOUNDARY, context)
         if boundary is None:
-            raise QgsProcessingException(
-                "A boundary conditions layer is required (use "
-                "'6a - Export UGRID (.nc)' if you don't need boundary files).")
+            raise QgsProcessingException("A boundary conditions layer is required.")
+        out_path = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
+        write_bc = self.parameterAsBoolean(parameters, self.WRITE_BC, context)
+
+        out_dir = os.path.dirname(out_path) or "."
+        pli_name = os.path.splitext(os.path.basename(out_path))[0]
 
         try:
-            if os.path.abspath(src_path) != os.path.abspath(out_path):
-                shutil.copyfile(src_path, out_path)
-                fb.pushInfo(f"UGRID NetCDF -> {out_path}")
-
-            by_type = _boundary_lines_by_type(boundary, layer.crs())
+            by_type = _boundary_lines_by_type(boundary, None)
             open_lines = by_type.get("open", [])
             if not open_lines:
-                fb.pushWarning(
-                    "No 'open' features in the boundary layer; no boundary "
-                    "condition files were written.")
-            else:
+                raise QgsProcessingException(
+                    "No 'open' features in the boundary layer; classify one "
+                    "in '5 - Generate boundary conditions' first.")
+
+            if write_bc:
                 pli, bc, ext = write_open_boundary_files(
-                    os.path.dirname(out_path) or ".", open_lines, feedback=fb)
+                    out_dir, open_lines, pli_name=pli_name, feedback=fb)
                 fb.pushInfo(f"Open boundary files: {pli}, {bc}, {ext}")
+            else:
+                pli, _ids = write_open_boundary_pli(
+                    out_dir, open_lines, pli_name=pli_name, feedback=fb)
+                fb.pushInfo(f"Open boundary file: {pli}")
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
@@ -1147,7 +1251,7 @@ class ExportGrdAlgorithm(_ExportBase):
             self.MESH, "Mesh layer (from stage 4)"))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.BOUNDARY, "Boundary conditions (from stage 5)",
-            [QgsProcessing.TypeVectorLine]))
+            [QgsProcessing.TypeVectorPoint, QgsProcessing.TypeVectorLine]))
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT, "Output grid (.grd)", fileFilter="ADCIRC grid (*.grd)"))
 
@@ -1232,13 +1336,13 @@ class GenerateMeshAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.DETAIL, "Detail region (optional, polygons)",
             [QgsProcessing.TypeVectorPolygon], optional=True))
-        _num(self, self.COAST_ZMAX, "Coastline level / wet threshold (m)", 2.0, -1e4, 1e4)
+        _num(self, self.COAST_ZMAX, "Coastline level / wet threshold (m)", 0.0, -1e4, 1e4)
         self.addParameter(QgsProcessingParameterBoolean(
             self.KEEP_LARGEST, "Keep only the largest water region",
             defaultValue=True))
-        _num(self, self.HMIN, "Min element size (m)", 100.0, 0.1)
+        _num(self, self.HMIN, "Min element size (m)", 500.0, 0.1)
         _num(self, self.HMAX, "Max element size (m)", 10000.0, 1.0)
-        _num(self, self.DETAIL_HMIN, "Detail min element size (m)", 30.0, 0.1)
+        _num(self, self.DETAIL_HMIN, "Detail min element size (m)", 100.0, 0.1)
         _num(self, self.A, "Depth coefficient a (a*d^2)", 0.14, 0.0)
         _num(self, self.B, "Depth coefficient b (b*d)", 28.0, 0.0)
         _num(self, self.MAX_GRADIENT, "Max size gradient (m/m)", 0.1, 1e-3, 10.0)
