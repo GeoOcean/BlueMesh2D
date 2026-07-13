@@ -335,8 +335,8 @@ def resample_polygon_hfun(
     polygon,
     hfun,
     harg=(),
-    min_angle_deg=0.0,
-    min_hole_vertices=4,
+    min_angle_deg=25,
+    min_hole_vertices=15,
 ):
     """Resample a polygon boundary at approximately ``h(p)`` spacing.
 
