@@ -149,10 +149,25 @@ interpreter QGIS uses:
   ```
   python -m pip install rasterio netCDF4 xarray        # + triangle (optional)
   ```
-- **Linux / macOS** — install into the Python QGIS runs on (Debian/Ubuntu system
+- **Linux** — install into the Python QGIS runs on (Debian/Ubuntu system
   Python needs `--break-system-packages` with `--user`):
   ```
   python3 -m pip install --user rasterio netCDF4 xarray   # + triangle (optional)
+  ```
+- **macOS** — the official QGIS.app bundles its **own** Python, so a plain
+  `python3 -m pip install` (Homebrew/system Python) installs into the wrong
+  interpreter. Use the bundled one explicitly, in a Terminal:
+  ```
+  /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install rasterio netCDF4 xarray   # + triangle (optional)
+  ```
+  (Adjust the app name if yours is e.g. `QGIS-LTR.app`.) Alternatively, run the
+  same `python3 -m pip install ...` line inside the **QGIS Python console**
+  wrapped in `import subprocess, sys; subprocess.check_call([sys.executable, "-m", "pip", "install", "rasterio", "netCDF4", "xarray"])`,
+  which is guaranteed to target QGIS's interpreter. If you installed QGIS via
+  **conda** (`conda install -c conda-forge qgis`), install the packages into
+  that same conda environment instead:
+  ```
+  conda install -c conda-forge rasterio netcdf4 xarray
   ```
 
 If `rasterio` clashes with QGIS's bundled GDAL on your platform, run the

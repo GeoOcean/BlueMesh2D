@@ -297,7 +297,7 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
             self.KEEP_LARGEST, "Keep only the largest water region",
             defaultValue=True))
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, "Water polygon", QgsProcessing.TypeVectorPolygon))
+            self.OUTPUT, "1 - Water polygon", QgsProcessing.TypeVectorPolygon))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -415,7 +415,7 @@ class _BuildHfunBase(_BaseAlg):
              "Buffer around the computed area (m; -1 = automatic)",
              -1.0, -1.0, 1e7, advanced=True)
         self.addParameter(QgsProcessingParameterRasterDestination(
-            self.OUTPUT, "Element-size raster (hfun)"))
+            self.OUTPUT, "2 - Element-size raster (hfun)"))
 
     def _method_kwargs(self, parameters, context):
         return {}  # subclass: method-specific kwargs for build_hfun_raster
@@ -636,7 +636,7 @@ class ResampleBoundaryAlgorithm(_BaseAlg):
         _num(self, self.MIN_ANGLE, "Min boundary angle (deg)", 25.0, 0.0, 180.0)
         _num(self, self.MIN_HOLE_VERTS, "Min hole vertices", 15, 0, 10000, integer=True)
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.EDGES, "Boundary edges", QgsProcessing.TypeVectorLine))
+            self.EDGES, "3 - Boundary edges", QgsProcessing.TypeVectorLine))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -806,7 +806,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
             self.INTERP_ORDER, "Bathymetry interpolation",
             options=self._INTERP_OPTS, defaultValue=2))
         self.addParameter(QgsProcessingParameterFileDestination(
-            self.OUTPUT, "Output mesh (UGRID NetCDF)", fileFilter="NetCDF (*.nc)"))
+            self.OUTPUT, "4 - Output mesh (UGRID NetCDF)", fileFilter="NetCDF (*.nc)"))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -1052,7 +1052,7 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
             self.MESH, "Mesh layer (from stage 4)"))
         _num(self, self.ZLIM, "Open boundary depth threshold (m)", 0.0, -1e4, 1e5)
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, "Boundary conditions", QgsProcessing.TypeVectorPoint))
+            self.OUTPUT, "5 - Boundary conditions", QgsProcessing.TypeVectorPoint))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -1308,12 +1308,6 @@ class GenerateMeshAlgorithm(_BaseAlg):
     _INTERP_OPTS = ["nearest", "bilinear", "bicubic"]
     _INTERP_VALS = [0, 1, 3]
 
-    def group(self):
-        return "7 - All steps"
-
-    def groupId(self):
-        return "all_steps"
-
     def name(self):
         return "generate_mesh"
 
@@ -1438,10 +1432,14 @@ def _load_mesh_layer(path, feedback):
         return
     try:
         from qgis.core import QgsMeshLayer
-        layer = QgsMeshLayer(path, "BlueMesh2D mesh", "mdal")
+        layer = QgsMeshLayer(path, "4 - BlueMesh2D mesh", "mdal")
         if layer.isValid():
             _enable_native_mesh(layer, feedback)
-            QgsProject.instance().addMapLayer(layer)
+            # Add without auto-inserting into the tree, then insert at the
+            # very top so it sits above every layer already produced by
+            # earlier pipeline stages.
+            QgsProject.instance().addMapLayer(layer, False)
+            QgsProject.instance().layerTreeRoot().insertLayer(0, layer)
         else:
             feedback.pushInfo(
                 "Mesh written but could not be loaded as a layer; open it "
