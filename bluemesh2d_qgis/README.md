@@ -90,25 +90,6 @@ internally (and embedded in the hfun raster). If the tif is already
 reprojection at all — and the output NetCDF carries metre units with a
 `projected_coordinate_system` grid mapping.
 
-## Layout
-
-```
-bluemesh2d_qgis/
-├── __init__.py        classFactory (QGIS entry point)
-├── metadata.txt       plugin metadata (hasProcessingProvider=yes)
-├── plugin.py          registers the Processing provider
-├── provider.py        BlueMesh2DProvider
-├── algorithm.py       Processing algorithms
-├── pipeline.py        headless orchestration facade (no QGIS dependency)
-└── bluemesh2d/        bundled copy of the meshing library
-```
-
-`pipeline.py` is the integration seam: it puts the plugin directory on
-`sys.path` so the bundled `bluemesh2d` imports as a top-level package, forces
-the non-interactive `Agg` matplotlib backend (the contour extraction needs it),
-routes progress/cancellation through the algorithm's
-`QgsProcessingFeedback`, and captures the mesher's stdout into the log.
-
 ## Install
 
 1. Copy this whole `bluemesh2d_qgis/` folder into your QGIS plugins directory:
@@ -173,6 +154,25 @@ interpreter QGIS uses:
 If `rasterio` clashes with QGIS's bundled GDAL on your platform, run the
 pipeline out-of-process instead (see below).
 
+## Layout
+
+```
+bluemesh2d_qgis/
+├── __init__.py        classFactory (QGIS entry point)
+├── metadata.txt       plugin metadata (hasProcessingProvider=yes)
+├── plugin.py          registers the Processing provider
+├── provider.py        BlueMesh2DProvider
+├── algorithm.py       Processing algorithms
+├── pipeline.py        headless orchestration facade (no QGIS dependency)
+└── bluemesh2d/        bundled copy of the meshing library
+```
+
+`pipeline.py` is the integration seam: it puts the plugin directory on
+`sys.path` so the bundled `bluemesh2d` imports as a top-level package, forces
+the non-interactive `Agg` matplotlib backend (the contour extraction needs it),
+routes progress/cancellation through the algorithm's
+`QgsProcessingFeedback`, and captures the mesher's stdout into the log.
+
 ## Usage
 
 - **Bathymetry raster** — GeoTIFF, elevation positive up (depth = −elevation).
@@ -186,28 +186,6 @@ pipeline out-of-process instead (see below).
 > Element count scales as 1/h². A small *Min size* over a large *Detail region*
 > can produce millions of triangles and exhaust memory — keep the detail area
 > tight and the floor sensible.
-
-## Run without QGIS (headless / CLI)
-
-`pipeline.py` has no QGIS dependency, so you can script it:
-
-```python
-import sys
-sys.path.insert(0, "/path/to/bluemesh2d_qgis")
-from pipeline import MeshConfig, generate_mesh
-
-res = generate_mesh(MeshConfig(
-    raster_path="Bati_10m_ohau_4326.tif",
-    output_path="mesh.nc",
-    hmin=100.0, hmax=10000.0, max_gradient=0.1,
-    # detail_geom=<a shapely polygon in the raster CRS>, detail_hmin=30.0,
-))
-print(res)   # MeshResult(n_nodes=..., n_triangles=..., ...)
-```
-
-This is also the recommended path for an **out-of-process** setup: keep
-`rasterio`/`netCDF4`/`triangle` in a dedicated env and have a thin QGIS plugin
-call this in a subprocess if in-process installation is troublesome.
 
 ## Notes
 
