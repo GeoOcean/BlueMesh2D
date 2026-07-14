@@ -433,8 +433,17 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
             sink.addFeature(f)
         if fix_verts:
             fb.pushInfo(f"Fixed vertices on the extent boundary: {n_fixed} "
-                        "(stored as Z=1; kept exactly by stage 3).")
+                        "(stored as Z=1; kept exactly by stage 3). Edit the "
+                        "flags with the Vertex Tool's Vertex Editor panel "
+                        "(Z column: 1 = fixed, 0 = free).")
+        self._dest = dest_id
+        self._show_verts = fix_verts
         return {self.OUTPUT: dest_id}
+
+    def postProcessAlgorithm(self, context, feedback):
+        if getattr(self, "_show_verts", False):
+            _style_water_polygon(getattr(self, "_dest", None), context, feedback)
+        return {self.OUTPUT: getattr(self, "_dest", None)}
 
 
 # ---------------------------------------------------------------------------
@@ -1048,6 +1057,60 @@ def _boundary_lines_by_type(source, target_crs):
                 out.setdefault(bt, []).append(
                     np.asarray([(p[0], p[1]) for p in line.coords], dtype=float))
     return out
+
+
+def _style_water_polygon(dest, context, feedback):
+    """Show the water polygon's vertices, colored by their fixed flag.
+
+    Adds two geometry-generator marker layers on top of the fill: red for
+    fixed vertices (Z=1, on the extent boundary) and green for free ones.
+    The markers read Z live, so edits in the Vertex Editor recolor at once.
+    """
+    try:
+        from qgis.core import (
+            QgsFillSymbol, QgsGeometryGeneratorSymbolLayer, QgsMarkerSymbol,
+            QgsProcessingUtils, QgsSingleSymbolRenderer,
+        )
+        try:
+            from qgis.core import Qgis
+            marker_type = Qgis.SymbolType.Marker
+        except (ImportError, AttributeError):
+            from qgis.core import QgsSymbol
+            marker_type = QgsSymbol.Marker
+
+        layer = QgsProcessingUtils.mapLayerFromString(dest, context)
+        if layer is None:
+            return
+
+        fill = QgsFillSymbol.createSimple(
+            {"color": "166,206,227,110", "outline_color": "31,120,180,255",
+             "outline_width": "0.35"})
+
+        vertices = ("array_foreach(generate_series(1, num_points($geometry)), "
+                    "point_n($geometry, @element))")
+
+        def gen(zfilter, color, outline):
+            glayer = QgsGeometryGeneratorSymbolLayer.create(
+                {"geometryModifier":
+                 f"collect_geometries(array_filter({vertices}, {zfilter}))"})
+            glayer.setSymbolType(marker_type)
+            glayer.setSubSymbol(QgsMarkerSymbol.createSimple(
+                {"name": "circle", "color": color, "outline_color": outline,
+                 "outline_width": "0.2", "size": "1.6"}))
+            return glayer
+
+        # free vertices (Z != 1, incl. missing Z) in green, fixed in red
+        fill.appendSymbolLayer(
+            gen("coalesce(z(@element), 0) <> 1",
+                "51,160,44,255", "20,90,20,255"))
+        fill.appendSymbolLayer(
+            gen("coalesce(z(@element), 0) = 1",
+                "227,26,28,255", "153,0,0,255"))
+
+        layer.setRenderer(QgsSingleSymbolRenderer(fill))
+        layer.triggerRepaint()
+    except Exception as exc:
+        feedback.pushInfo(f"Could not style water polygon: {exc}")
 
 
 def _style_hfun_raster(dest, context, feedback):
