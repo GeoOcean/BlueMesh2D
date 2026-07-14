@@ -188,6 +188,34 @@ def _source_to_segments(source):
     return segments
 
 
+def _source_to_points(source):
+    """Collect every point of a point source as ``(x, y)`` tuples.
+
+    Parameters
+    ----------
+    source : QgsProcessingFeatureSource
+        Point feature source (Point or MultiPoint geometries).
+
+    Returns
+    -------
+    points : list of tuple
+        One ``(x, y)`` tuple per point.
+    """
+    from shapely import wkt as shapely_wkt
+
+    points = []
+    for feat in source.getFeatures():
+        g = feat.geometry()
+        if g is None or g.isEmpty():
+            continue
+        geom = shapely_wkt.loads(g.asWkt())
+        parts = geom.geoms if hasattr(geom, "geoms") else [geom]
+        for p in parts:
+            if p.geom_type == "Point":
+                points.append((p.x, p.y))
+    return points
+
+
 class _FeedbackAdapter:
     """Wrap QgsProcessingFeedback so pushWarning exists on older QGIS.
 
@@ -745,6 +773,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
     EDGES = "EDGES"
     HFUN = "HFUN"
     RASTER = "RASTER"
+    FIXED_POINTS = "FIXED_POINTS"
     KIND = "KIND"
     DO_SMOOTH = "DO_SMOOTH"
     DO_SMOOD = "DO_SMOOD"
@@ -775,9 +804,11 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
                 "and an optional smood pass (orthogonalization for Delft3D-FM). "
                 "Each line feature is treated as a closed boundary ring (closed "
                 "automatically if its ends differ); vertices closer than 1 mm "
-                "are snapped together. Bathymetry is sampled from the raster "
-                "onto the nodes; output is a UGRID NetCDF loaded as a mesh "
-                "layer.")
+                "are snapped together. An optional point layer gives fixed "
+                "points: each becomes a mesh node at exactly that position, "
+                "pinned through smoothing and orthogonalization. Bathymetry "
+                "is sampled from the raster onto the nodes; output is a "
+                "UGRID NetCDF loaded as a mesh layer.")
 
     def createInstance(self):
         return GenerateMeshFromBoundaryAlgorithm()
@@ -790,6 +821,10 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
             self.HFUN, "Element-size raster (from stage 2)"))
         self.addParameter(QgsProcessingParameterRasterLayer(
             self.RASTER, "Bathymetry raster (for node depths)"))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.FIXED_POINTS,
+            "Fixed points (optional; forced mesh nodes, never moved)",
+            [QgsProcessing.TypeVectorPoint], optional=True))
         self.addParameter(QgsProcessingParameterEnum(
             self.KIND, "Refinement kind", options=self._KIND_OPTS, defaultValue=0))
         self.addParameter(QgsProcessingParameterBoolean(
@@ -817,6 +852,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
         source = self.parameterAsSource(parameters, self.EDGES, context)
         hfun_layer = self.parameterAsRasterLayer(parameters, self.HFUN, context)
         bathy = self.parameterAsRasterLayer(parameters, self.RASTER, context)
+        fixed_source = self.parameterAsSource(parameters, self.FIXED_POINTS, context)
         out_path = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
 
         segments = _source_to_segments(source)
@@ -840,12 +876,26 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
                             for s in segments]
             node, edge = pslg_from_segments(segments)
             fb.pushInfo(f"Boundary from edges layer: {len(node)} nodes, {len(edge)} edges")
+
+            fixed_points = None
+            if fixed_source is not None:
+                import numpy as np
+                pts = _source_to_points(fixed_source)
+                if pts:
+                    fixed_points = np.asarray(pts, dtype=float)
+                    fixed_crs = pyproj.CRS.from_wkt(
+                        fixed_source.sourceCrs().toWkt())
+                    if fixed_crs != utm_crs:
+                        fixed_points = reproject_node(
+                            fixed_points, fixed_crs, utm_crs)
+
             vert, tria = mesh_pslg(
                 node, edge, hfuns,
                 kind=self._KIND_OPTS[self.parameterAsEnum(parameters, self.KIND, context)],
                 do_smooth=self.parameterAsBool(parameters, self.DO_SMOOTH, context),
                 do_smood=self.parameterAsBool(parameters, self.DO_SMOOD, context),
                 smood_merge_small_links=self.parameterAsBool(parameters, self.SMOOD_MERGE, context),
+                fixed_points=fixed_points,
                 feedback=fb)
             interp_idx = self.parameterAsEnum(parameters, self.INTERP_ORDER, context)
             export_ugrid(vert, tria, bathy.source(), utm_crs, out_path,

@@ -312,6 +312,7 @@ def ortho_merge_iterate_dataset(
     verbose: bool = True,
     jsferic: int = 1,
     merge_small_links: bool = True,
+    fixed: Optional[np.ndarray] = None,
 ) -> tuple:
     """Iteratively orthogonalize and merge circumcenters on a UGRID dataset.
 
@@ -357,6 +358,9 @@ def ortho_merge_iterate_dataset(
         ``1`` for spherical lon/lat; ``0`` for planar coordinates.
     merge_small_links : bool, optional
         If ``False``, keep pure triangles (no quad merge step).
+    fixed : array_like of int, optional
+        Node indices to hold fixed (never displaced). Node numbering is
+        preserved by every pipeline step, so the indices stay valid.
 
     Returns
     -------
@@ -438,6 +442,7 @@ def ortho_merge_iterate_dataset(
             verbose=verbose,
             jsferic=jsferic,
             smalllink_priority=not merge_small_links,
+            fixed=fixed,
         )
 
         NODE = np.column_stack([ortho_res.vert[:, 0], ortho_res.vert[:, 1], node_z])
@@ -708,6 +713,7 @@ def ortho_merge_iterate_tria(
     verbose: bool = True,
     jsferic: int = 1,
     merge_small_links: bool = True,
+    fixed: Optional[np.ndarray] = None,
 ) -> tuple:
     """Run the ortho+merge pipeline starting from a pure triangle mesh.
 
@@ -784,6 +790,7 @@ def ortho_merge_iterate_tria(
         verbose=verbose,
         jsferic=jsferic,
         merge_small_links=merge_small_links,
+        fixed=fixed,
     )
 
     vert_out = np.column_stack(

@@ -1876,6 +1876,7 @@ def apply_combined_ortho_smoother_to_zone(
     verbose: bool = True,
     jsferic: int = 1,
     smalllink_priority: bool = False,
+    fixed_mask: Optional[np.ndarray] = None,
 ) -> Tuple[bool, bool]:
     """Apply combined Laplacian smoothing and orthogonality displacement to a zone.
 
@@ -1909,6 +1910,8 @@ def apply_combined_ortho_smoother_to_zone(
         ``1`` for spherical lon/lat; ``0`` for planar coordinates.
     smalllink_priority : bool, optional
         Prioritize small-link displacement over orthogonality.
+    fixed_mask : ndarray of bool of shape (N,), optional
+        Nodes flagged ``True`` are never displaced.
 
     Returns
     -------
@@ -2543,6 +2546,8 @@ def apply_combined_ortho_smoother_to_zone(
             gid = int(g)
             if gid not in internal_set:
                 continue
+            if fixed_mask is not None and fixed_mask[gid]:
+                continue
             w_node = dist_weight.get(gid, 1.0)
             if smalllink_priority:
                 # The circumcenter-separation push was validated by the sign
@@ -2746,6 +2751,7 @@ def orthogonalize_tria_mesh(
     verbose: bool = True,
     jsferic: int = 1,
     smalllink_priority: bool = False,
+    fixed: Optional[np.ndarray] = None,
 ) -> TriaOrthoResult:
     """Orthogonalize a pure triangle mesh in memory.
 
@@ -2773,6 +2779,8 @@ def orthogonalize_tria_mesh(
         ``1`` for spherical lon/lat; ``0`` for planar coordinates.
     smalllink_priority : bool, optional
         Enable in-ortho small-link handling (flips + separation moves).
+    fixed : array_like of int, optional
+        Indices of nodes to hold fixed (never displaced).
 
     Returns
     -------
@@ -2789,6 +2797,15 @@ def orthogonalize_tria_mesh(
     if vert.ndim != 2 or vert.shape[1] != 2:
         raise ValueError("vert must be an array of shape (N,2)")
     tria = np.asarray(tria, dtype=np.int64)
+
+    fixed_mask: Optional[np.ndarray] = None
+    if fixed is not None:
+        fixed_idx = np.unique(np.asarray(fixed, dtype=np.int64).ravel())
+        if fixed_idx.size:
+            if fixed_idx.min() < 0 or fixed_idx.max() >= vert.shape[0]:
+                raise ValueError("orthogonalize_tria_mesh: invalid FIXED indices")
+            fixed_mask = np.zeros(vert.shape[0], dtype=bool)
+            fixed_mask[fixed_idx] = True
 
     face_nodes = tria.copy()
     edge_nodes, edge_faces = _build_edges_from_tria(tria)
@@ -2928,6 +2945,7 @@ def orthogonalize_tria_mesh(
                 verbose=verbose,
                 jsferic=jsferic,
                 smalllink_priority=smalllink_priority,
+                fixed_mask=fixed_mask,
             )
             n_zones_orthogonalized += 1
             visited_faces_global.update(faces_zone)
