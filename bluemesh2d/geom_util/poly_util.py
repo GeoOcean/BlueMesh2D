@@ -310,10 +310,22 @@ def _resample_ring_parts(ring_coords, labels, hfun, harg=()):
 
     # vertex i is fixed when the labels of its two incident edges differ
     breaks = [i for i in range(n) if labels[i - 1] != labels[i]]
-    if len(breaks) < 2:
-        # 0 breaks: uniform ring; 1 break cannot happen on a closed ring
+    if not breaks and labels.size and labels[0] >= 0:
+        # ring uniformly covered by one explicit part: anchor it at vertex 0
+        # (a single fixed point on an otherwise free ring)
+        breaks = [0]
+    if not breaks:
         closed = _resample_ring_hfun(ring, hfun, harg)
         return closed, np.zeros(max(len(closed) - 1, 0), dtype=bool)
+    if len(breaks) == 1:
+        # single fixed vertex: the whole ring is one arc that starts and
+        # ends at that vertex (kept exactly), resampled as an open polyline
+        i0 = breaks[0]
+        arc = np.vstack([ring[i0:], ring[: i0 + 1]])
+        res = _resample_arc_hfun(arc, hfun, harg)
+        pts = res[:-1]
+        protect = np.concatenate([[True], np.zeros(len(pts) - 1, dtype=bool)])
+        return np.vstack([pts, pts[0:1]]), protect
 
     pieces = []
     protect = []
@@ -568,7 +580,9 @@ def resample_polygon_hfun(
         offset = 0
         for r, sz in enumerate(ring_sizes):
             lab = labels_global[offset : offset + sz]
-            if np.unique(lab).size > 1:  # ring crosses part boundaries
+            # any explicitly-listed edge: the ring either crosses part
+            # boundaries or is one whole part (anchored at its start vertex)
+            if np.any(lab >= 0):
                 ring_labels[r] = lab
             offset += sz
 
