@@ -839,9 +839,12 @@ def _fixed_part_from_z(poly):
     """Split a Z-flagged polygon into 2D geometry + resample ``part`` lists.
 
     Stage 1 marks vertices lying on the extent polygon boundary with Z=1
-    (Z=0 elsewhere). Every boundary edge whose two endpoints are flagged is
-    returned as its own part, so ``resample_polygon_hfun`` keeps all flagged
-    vertices exactly. Returns ``(poly, None)`` unchanged for 2D polygons.
+    (Z=0 elsewhere; the user can toggle any vertex in the Vertex Editor).
+    Each arc of edges between two consecutive flagged vertices becomes one
+    part, so every flagged vertex -- contiguous run or isolated -- is a part
+    junction that ``resample_polygon_hfun`` keeps exactly. Rings holding
+    flagged vertices are rotated to start at one, so the part junctions
+    line up with the ring seam. Returns ``(poly, None)`` for 2D polygons.
     """
     import numpy as np
     from shapely.geometry import Polygon
@@ -858,9 +861,18 @@ def _fixed_part_from_z(poly):
         pts = r[:-1] if len(r) > 1 and np.allclose(r[0, :2], r[-1, :2]) else r
         flag = pts[:, 2] > 0.5 if pts.shape[1] > 2 else np.zeros(len(pts), bool)
         n = len(pts)
-        for i in range(n):
-            if flag[i] and flag[(i + 1) % n]:
-                part.append(np.array([offset + i]))
+        fidx = np.flatnonzero(flag)
+        if fidx.size == 0:
+            rings2d.append(pts[:, :2])
+            offset += n
+            continue
+        # start the ring at a flagged vertex so arcs don't cross the seam
+        k0 = int(fidx[0])
+        pts = np.roll(pts, -k0, axis=0)
+        fidx = np.flatnonzero(np.roll(flag, -k0))  # fidx[0] == 0
+        bounds = list(fidx) + [n]
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            part.append(np.arange(offset + a, offset + b))
         rings2d.append(pts[:, :2])
         offset += n
     poly2d = Polygon(rings2d[0], rings2d[1:])
@@ -939,8 +951,7 @@ def resample_boundary(poly, hfuns, min_angle_deg=25.0, min_hole_vertices=15,
 
     if n_fixed_total:
         feedback.pushInfo(
-            f"Fixed vertices (extent boundary) preserved: ~{n_fixed_total} "
-            "flagged edges")
+            f"Fixed vertices preserved exactly: {n_fixed_total}")
 
     poly_comput = resampled[0] if len(resampled) == 1 else MultiPolygon(resampled)
     node, edge = polygon_to_node_edge(poly_comput)
