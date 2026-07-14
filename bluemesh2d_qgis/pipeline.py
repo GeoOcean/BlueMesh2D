@@ -1024,8 +1024,26 @@ def _warn_if_mesh_too_big(node, edge, hfuns, feedback):
         pass  # a failed estimate must never block the run
 
 
+def _locate_fixed(vert, fixed_points, feedback, tol=1e-6):
+    """Return indices in ``vert`` of each fixed point (nearest within tol)."""
+    import numpy as np
+
+    idx = []
+    for p in np.asarray(fixed_points, dtype=float):
+        d2 = np.sum((vert - p) ** 2, axis=1)
+        j = int(np.argmin(d2))
+        if d2[j] <= tol * tol:
+            idx.append(j)
+        else:
+            feedback.pushWarning(
+                f"Fixed point ({p[0]:.3f}, {p[1]:.3f}) not found in mesh "
+                f"(nearest node {np.sqrt(d2[j]):.3g} m away); skipped.")
+    return np.asarray(idx, dtype=int)
+
+
 def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
-              do_smood=False, smood_merge_small_links=False, feedback=None):
+              do_smood=False, smood_merge_small_links=False,
+              fixed_points=None, feedback=None):
     """Refine a PSLG, then optionally smooth and/or smood it.
 
     Parameters
@@ -1049,6 +1067,12 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
         triangles whose circumcenters are too close are merged, then
         re-split). Use only when the default triangle-only smood cannot
         remove the remaining small flow links. Default is ``False``.
+    fixed_points : ndarray of shape (K, 2), optional
+        XY coordinates (working CRS) of points that must appear as mesh
+        nodes at exactly these positions: they are inserted before
+        refinement and pinned during smoothing and orthogonalization.
+        Points outside the meshed domain or coincident with boundary
+        nodes are ignored (with a warning).
     feedback : object or None, optional
         Feedback sink, see :func:`extract_water_polygon`.
 
@@ -1067,6 +1091,27 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
     if kind not in ("delaunay", "delfront"):
         raise ValueError("kind must be 'delaunay' or 'delfront'")
 
+    import numpy as np
+
+    if fixed_points is not None:
+        fixed_points = np.asarray(fixed_points, dtype=float).reshape(-1, 2)
+        if fixed_points.size:
+            # drop fixed points (nearly) coincident with existing PSLG nodes:
+            # a duplicate vertex would break the triangulation
+            keep_fp = np.ones(fixed_points.shape[0], dtype=bool)
+            for i, p in enumerate(fixed_points):
+                if np.min(np.sum((node - p) ** 2, axis=1)) < 1e-6:
+                    keep_fp[i] = False
+                    feedback.pushWarning(
+                        f"Fixed point ({p[0]:.3f}, {p[1]:.3f}) coincides with "
+                        "a boundary node; skipped.")
+            fixed_points = fixed_points[keep_fp]
+        if fixed_points.size:
+            feedback.pushInfo(f"Inserting {len(fixed_points)} fixed point(s)")
+            node = np.vstack([node, fixed_points])
+        else:
+            fixed_points = None
+
     _warn_if_mesh_too_big(node, edge, hfuns, feedback)
     feedback.setProgress(5)
 
@@ -1077,11 +1122,26 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
     feedback.pushInfo(f"Refined: {len(vert)} nodes, {len(tria)} triangles")
     feedback.setProgress(55)
 
+    # refine never moves input nodes, so fixed points can be re-located by
+    # coordinate after each stage (indices change with mesh compaction)
+    fixed_idx = None
+    if fixed_points is not None:
+        fixed_idx = _locate_fixed(vert, fixed_points, feedback)
+        # keep only the points actually present (e.g. outside the domain,
+        # dropped by refine) so later stages don't re-warn about them
+        fixed_points = vert[fixed_idx, :].copy()
+        if fixed_points.size == 0:
+            fixed_points = None
+            fixed_idx = None
+
     if do_smooth:
         feedback.pushInfo("Smoothing mesh ...")
         with contextlib.redirect_stdout(_LogWriter(feedback)):
-            vert, etri, tria, tnum = smooth(vert, etri, tria, tnum, {}, hfuns)
+            vert, etri, tria, tnum = smooth(vert, etri, tria, tnum, {}, hfuns,
+                                            fixed=fixed_idx)
         _check(feedback)
+        if fixed_points is not None:
+            fixed_idx = _locate_fixed(vert, fixed_points, feedback)
         feedback.setProgress(85)
 
     if do_smood:
@@ -1098,7 +1158,8 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
             smood_opts["merge_small_links"] = True
         try:
             with contextlib.redirect_stdout(_LogWriter(feedback)):
-                vert, etri, tria, tnum = smood(vert, etri, tria, tnum, smood_opts)
+                vert, etri, tria, tnum = smood(vert, etri, tria, tnum, smood_opts,
+                                               fixed=fixed_idx)
         except ImportError as exc:
             raise RuntimeError(
                 f"smood needs an optional package that is not installed: {exc}. "

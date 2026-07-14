@@ -9,7 +9,10 @@ from .mesh_util.setset import setset
 from .mesh_util.tricon import tricon
 
 
-def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg=[]):
+def smooth(
+    vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg=[],
+    fixed=None,
+):
     """Perform hill-climbing mesh smoothing for 2D triangle meshes.
 
     Optimize vertex positions and local topology via a spring-based update
@@ -35,6 +38,10 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         Mesh-size function for local edge-length control.
     harg : tuple, optional
         Extra arguments passed to ``hfun``.
+    fixed : array_like of int, optional
+        Indices (into ``vert``) of vertices to hold fixed: they are never
+        moved, never removed, and edges incident to them are never
+        collapsed or split.
 
     Returns
     -------
@@ -90,6 +97,13 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         raise TypeError("smooth:incorrectInputClass - Incorrect input class.")
 
     nvrt = vert.shape[0]
+
+    if fixed is None:
+        fixed = np.empty((0,), dtype=int)
+    else:
+        fixed = np.unique(np.asarray(fixed, dtype=int).ravel())
+        if fixed.size and (fixed.min() < 0 or fixed.max() >= nvrt):
+            raise ValueError("smooth:invalidInputs - Invalid FIXED input array.")
 
     if np.min(conn[:, :2]) < 0 or np.max(conn[:, :2]) > nvrt:
         raise ValueError("smooth:invalidInputs - Invalid EDGE input array.")
@@ -189,6 +203,7 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
             vnew = vnew / vsum[:, None]
             vnew[conn.flatten(), :] = vert[conn.flatten(), :]
+            vnew[fixed, :] = vert[fixed, :]
             vnew[vdeg == 0, :] = vert[vdeg == 0, :]
             vert = vnew
 
@@ -252,6 +267,7 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         keep[vdeg > 4] = True
         keep[conn.flatten()] = True
         keep[free.flatten()] = True
+        keep[fixed] = True
 
         lmax = 5.0 / 4.0
         lmin = 1.0 / lmax
@@ -262,6 +278,7 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
         vbnd = np.zeros(vert.shape[0], dtype=bool)
         vbnd[conn[:, 0]] = True
         vbnd[conn[:, 1]] = True
+        vbnd[fixed] = True
 
         ebad = vbnd[edge[:, 0]] | vbnd[edge[:, 1]]  # not at boundaries
 
@@ -324,6 +341,7 @@ def smooth(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, har
 
         vert = np.vstack([vert[keep, :], emid[less, :], emid[more, :]])
         conn = redo[conn]
+        fixed = redo[fixed]
 
         tcpu["keep"] += time.time() - ttic
 

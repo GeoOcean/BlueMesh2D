@@ -6,7 +6,7 @@ from .ortho_merge.constants import DEFAULT_SMALLLINK_THRESHOLD
 DEFAULT_REQUIRE_STRICT_DUAL: bool = True
 
 
-def _ortho_merge_pipeline(vert, conn, tria, tnum, opts):
+def _ortho_merge_pipeline(vert, conn, tria, tnum, opts, fixed=None):
     """Run repeated orthogonalize and merge_circumcenters cycles on a triangle mesh."""
     from .ortho_merge.ortho_merge_iter import ortho_merge_iterate_tria, print_stats
 
@@ -98,6 +98,7 @@ def _ortho_merge_pipeline(vert, conn, tria, tnum, opts):
         verbose=False,
         jsferic=jsferic,
         merge_small_links=merge_small_links,
+        fixed=fixed,
     )
 
     # Final snapshot (triangle proxy built from mixed faces).
@@ -263,6 +264,7 @@ def _ortho_merge_pipeline(vert, conn, tria, tnum, opts):
                 enable_edge_flips=bool(opts.get("enable_edge_flips", True)),
                 verbose=False,
                 jsferic=jsferic,
+                fixed=fixed,
             )
             vert_out = ortho_res.vert
             tria_out = ortho_res.tria
@@ -270,7 +272,10 @@ def _ortho_merge_pipeline(vert, conn, tria, tnum, opts):
     return np.asarray(vert_out, dtype=np.float64), conn, tria_out, tnum_out
 
 
-def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg=[]):
+def smood(
+    vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg=[],
+    fixed=None,
+):
     """Smooth a mesh with orthogonalization for flow simulations.
 
     Combine orthogonalization (aspect-ratio control) with hill-climbing
@@ -309,6 +314,10 @@ def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg
         Mesh-size function (reserved for future use).
     harg : tuple, optional
         Extra arguments for ``hfun``.
+    fixed : array_like of int, optional
+        Indices (into ``vert``) of vertices to hold fixed: they are never
+        displaced by orthogonalization or smoothing. Node numbering is
+        preserved by the pipeline, so the indices stay valid throughout.
 
     Returns
     -------
@@ -360,6 +369,11 @@ def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg
 
     nvrt = vert.shape[0]
 
+    if fixed is not None:
+        fixed = np.unique(np.asarray(fixed, dtype=int).ravel())
+        if fixed.size and (fixed.min() < 0 or fixed.max() >= nvrt):
+            raise ValueError("smood:invalidInputs - Invalid FIXED input array.")
+
     if np.min(conn[:, :2]) < 0 or np.max(conn[:, :2]) > nvrt:
         raise ValueError("smood:invalidInputs - Invalid CONN input array.")
 
@@ -369,7 +383,7 @@ def smood(vert=None, conn=None, tria=None, tnum=None, opts=None, hfun=None, harg
     if not np.isinf(opts["disp"]):
         print("\n Smooth triangulation for Delft3D-FM computation...\n")
 
-    return _ortho_merge_pipeline(vert, conn, tria, tnum, opts)
+    return _ortho_merge_pipeline(vert, conn, tria, tnum, opts, fixed=fixed)
 
 
 def makeopt_smood(opts=None):
