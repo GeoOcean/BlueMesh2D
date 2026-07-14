@@ -58,6 +58,7 @@ from .pipeline import (
     MeshCanceled,
     MeshConfig,
     boundary_lines_from_points,
+    build_hfun_constant_raster,
     build_hfun_raster,
     check_dependencies,
     export_grd_from_lines,
@@ -691,9 +692,24 @@ class BuildHfunCustomAlgorithm(_BuildHfunBase):
 # 3. Resample boundary
 # ---------------------------------------------------------------------------
 
-class BuildHfunConstantAlgorithm(_BuildHfunBase):
-    METHOD = "constant"
-    H_CONST = "H_CONST"
+class BuildHfunConstantAlgorithm(_BaseAlg):
+    """Uniform element size over the water polygon; no bathymetry needed."""
+    WATER = "WATER"
+    DETAIL = "DETAIL"
+    H_DOMAIN = "H_DOMAIN"
+    H_DETAIL = "H_DETAIL"
+    MAX_GRADIENT = "MAX_GRADIENT"
+    EXTENT_BUFFER = "EXTENT_BUFFER"
+    OUTPUT = "OUTPUT"
+
+    def group(self):
+        return "2 - Build element-size raster (hfun)"
+
+    def groupId(self):
+        return "build_hfun"
+
+    def createInstance(self):
+        return BuildHfunConstantAlgorithm()
 
     def name(self):
         return "build_hfun_constant"
@@ -702,22 +718,72 @@ class BuildHfunConstantAlgorithm(_BuildHfunBase):
         return "2d - Constant value"
 
     def shortHelpString(self):
-        return ("Element-size raster with a single constant value everywhere "
-                "(uniform mesh). The value is still floored at Min element "
-                "size (Detail min size inside the detail polygons), capped "
-                "at Max element size, then gradient-limited -- with a "
-                "detail region this gives a uniform mesh locally refined "
-                "there. Saved as a GeoTIFF in the working CRS; feeds stages "
-                "3 and 4.")
+        return ("Element-size raster with one target size over the whole "
+                "domain and another inside the detail region, without any "
+                "bathymetry raster: the computed extent comes from the "
+                "water polygon (stage 1). The transition between the two "
+                "sizes is gradient-limited. Saved as a GeoTIFF in the "
+                "working CRS; feeds stages 3 and 4.")
 
     def initAlgorithm(self, config=None):
-        self._add_inputs()
-        _num(self, self.H_CONST, "Element size (m)", 1000.0, 0.1)
-        self._add_limits()
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.WATER, "Water polygon (from stage 1)",
+            [QgsProcessing.TypeVectorPolygon]))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.DETAIL, "Detail region (optional, polygons)",
+            [QgsProcessing.TypeVectorPolygon], optional=True))
+        _num(self, self.H_DOMAIN, "Element size in the domain (m)",
+             1000.0, 0.1)
+        _num(self, self.H_DETAIL, "Element size in the detail region (m)",
+             250.0, 0.1)
+        _num(self, self.MAX_GRADIENT, "Max size gradient (m/m)",
+             0.1, 1e-3, 10.0)
+        _num(self, self.EXTENT_BUFFER,
+             "Buffer around the computed area (m; -1 = automatic)",
+             -1.0, -1.0, 1e7, advanced=True)
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.OUTPUT, "2 - Element-size raster (hfun)"))
 
-    def _method_kwargs(self, parameters, context):
-        return dict(
-            h_const=self.parameterAsDouble(parameters, self.H_CONST, context))
+    def postProcessAlgorithm(self, context, feedback):
+        _style_hfun_raster(getattr(self, "_dest", None), context, feedback)
+        return {self.OUTPUT: getattr(self, "_dest", None)}
+
+    def processAlgorithm(self, parameters, context, feedback):
+        _require_deps()
+        import pyproj
+        fb = _FeedbackAdapter(feedback)
+        out_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
+
+        water_src = self.parameterAsSource(parameters, self.WATER, context)
+        water_geom = _source_to_shapely(water_src)
+        if water_geom is None:
+            raise QgsProcessingException("Water layer has no polygon geometry.")
+        layer_crs = pyproj.CRS.from_wkt(water_src.sourceCrs().toWkt())
+
+        detail_geom = None
+        detail_src = self.parameterAsSource(parameters, self.DETAIL, context)
+        if detail_src is not None:
+            detail_geom = _source_to_shapely(detail_src, water_src.sourceCrs())
+            if detail_geom is None:
+                fb.pushWarning("Detail layer has no usable geometry; "
+                               "ignoring it.")
+
+        try:
+            build_hfun_constant_raster(
+                water_geom, out_path,
+                h_domain=self.parameterAsDouble(parameters, self.H_DOMAIN, context),
+                detail_geom=detail_geom,
+                h_detail=self.parameterAsDouble(parameters, self.H_DETAIL, context),
+                max_gradient=self.parameterAsDouble(parameters, self.MAX_GRADIENT, context),
+                extent_buffer=self.parameterAsDouble(parameters, self.EXTENT_BUFFER, context),
+                layer_crs=layer_crs,
+                feedback=fb)
+        except MeshCanceled:
+            raise QgsProcessingException("Canceled by user.")
+        except Exception as exc:
+            raise QgsProcessingException(f"hfun raster failed: {exc}")
+        self._dest = out_path
+        return {self.OUTPUT: out_path}
 
 
 class ResampleBoundaryAlgorithm(_BaseAlg):

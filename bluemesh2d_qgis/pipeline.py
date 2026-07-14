@@ -786,6 +786,148 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     return out_path, utm_crs
 
 
+def build_hfun_constant_raster(water_geom, out_path, h_domain,
+                               detail_geom=None, h_detail=None,
+                               max_gradient=0.1, extent_buffer=None,
+                               layer_crs=None, feedback=None):
+    """Uniform element-size raster from the water polygon (no bathymetry).
+
+    The size is `h_domain` everywhere, `h_detail` inside `detail_geom`,
+    gradient-limited so the transition between the two respects
+    `max_gradient`. The computed extent is the water polygon's bounds plus
+    a buffer. The output GeoTIFF is in the working CRS (the layer CRS when
+    already projected, a local UTM otherwise), like
+    :func:`build_hfun_raster`.
+
+    Parameters
+    ----------
+    water_geom : shapely.geometry.base.BaseGeometry
+        Water polygon (stage 1) in `layer_crs`; defines the computed extent.
+    out_path : str
+        Output GeoTIFF path.
+    h_domain : float
+        Element size (m) over the domain.
+    detail_geom : shapely.geometry.base.BaseGeometry or None, optional
+        Detail-region polygon in `layer_crs`. Default is ``None``.
+    h_detail : float or None, optional
+        Element size (m) inside `detail_geom`. Default is ``None`` (ignored).
+    max_gradient : float, optional
+        Maximum allowed size gradient (m/m). Default is 0.1.
+    extent_buffer : float or None, optional
+        Buffer (m) padding the computed extent; ``None`` or negative uses
+        the automatic gradient-influence radius. Default is ``None``.
+    layer_crs : pyproj.CRS or None, optional
+        CRS of the input geometries. ``None`` assumes an already-metric CRS.
+    feedback : object or None, optional
+        Feedback sink, see :func:`extract_water_polygon`.
+
+    Returns
+    -------
+    out_path : str
+        Path to the written GeoTIFF.
+    utm_crs : pyproj.CRS
+        Working CRS the output raster is written in.
+    """
+    feedback = feedback or _NullFeedback()
+    import numpy as np
+    import pyproj
+    import rasterio
+    import shapely
+    from rasterio.transform import from_origin
+
+    from bluemesh2d.geom_util.proj_util import get_local_utm_crs, reproject_geometry
+    from bluemesh2d.hfun_util.make_constant_hfun import make_constant_hfun
+    from bluemesh2d.hfun_util.smooth_and_precomput import smooth_precomput_hfun
+
+    h_domain = float(h_domain)
+    if not np.isfinite(h_domain) or h_domain <= 0:
+        raise ValueError("The domain element size must be > 0.")
+    use_detail = (detail_geom is not None and h_detail is not None
+                  and float(h_detail) > 0)
+    h_detail = float(h_detail) if use_detail else h_domain
+
+    if layer_crs is None:
+        layer_crs = pyproj.CRS.from_epsg(3857)  # assume metric
+    xmin0, ymin0, xmax0, ymax0 = water_geom.bounds
+    utm_crs = get_local_utm_crs(pyproj.CRS(layer_crs),
+                                np.array([xmin0, xmax0]),
+                                np.array([ymin0, ymax0]))
+    if pyproj.CRS(layer_crs) != utm_crs:
+        water_u = reproject_geometry(water_geom, layer_crs, utm_crs)
+        detail_u = (reproject_geometry(detail_geom, layer_crs, utm_crs)
+                    if use_detail else None)
+    else:
+        water_u = water_geom
+        detail_u = detail_geom if use_detail else None
+
+    base = make_constant_hfun(h_domain, bounds=water_u.bounds)
+    if use_detail:
+        def hfun(xy):
+            xy = np.atleast_2d(np.asarray(xy, dtype=float))
+            v = base(xy)
+            v[shapely.contains_xy(detail_u, xy[:, 0], xy[:, 1])] = h_detail
+            return v
+        hfun.bounds = water_u.bounds
+    else:
+        hfun = base
+
+    hmin = min(h_domain, h_detail)
+    hmax = max(h_domain, h_detail)
+    region = tuple(water_u.bounds)
+    xmin, ymin, xmax, ymax = region
+    dw, dh = xmax - xmin, ymax - ymin
+    cell_size = max(max(dw, dh) / 1200.0, hmin / 2.0)
+    if extent_buffer is None or extent_buffer < 0:
+        margin = min((hmax - hmin) / max_gradient, 0.25 * max(dw, dh))
+        margin = max(margin, 2.0 * cell_size)
+    else:
+        margin = float(extent_buffer)
+    xs = np.arange(xmin - margin, xmax + margin + cell_size, cell_size)
+    ys = np.arange(ymax + margin, ymin - margin - cell_size, -cell_size)
+    _warn_if_ram_risk(
+        feedback, 40.0 * len(xs) * len(ys),
+        f"The element-size grid ({len(ys)} x {len(xs)} cells "
+        f"@ {cell_size:.0f} m)",
+        hint="Increase the element sizes or reduce the extent buffer.")
+    feedback.setProgress(10)
+
+    if hmax > hmin:
+        feedback.pushInfo(
+            "Gradient-limiting the size function (this can take a moment) ...")
+        hfuns = smooth_precomput_hfun(hfun, domain=region,
+                                      max_gradient=max_gradient,
+                                      cell_size=cell_size, plot=False)
+    else:
+        feedback.pushInfo("Uniform size: no gradient limiting needed.")
+        hfuns = hfun
+    _check(feedback)
+    feedback.setProgress(55)
+
+    feedback.pushInfo(
+        f"Sampling size raster {len(ys)} x {len(xs)} @ {cell_size:.0f} m ...")
+    H = np.empty((len(ys), len(xs)), dtype=np.float32)
+    rows = max(1, int(2_000_000 // max(len(xs), 1)))
+    for i0 in range(0, len(ys), rows):
+        i1 = min(i0 + rows, len(ys))
+        Xc, Yc = np.meshgrid(xs, ys[i0:i1])
+        H[i0:i1] = np.asarray(
+            hfuns(np.column_stack([Xc.ravel(), Yc.ravel()])),
+            dtype=np.float32).reshape(i1 - i0, len(xs))
+        _check(feedback)
+        feedback.setProgress(55 + 40.0 * i1 / len(ys))
+
+    transform = from_origin(xs[0] - cell_size / 2, ys[0] + cell_size / 2,
+                            cell_size, cell_size)
+    with rasterio.open(
+        out_path, "w", driver="GTiff", height=H.shape[0], width=H.shape[1],
+        count=1, dtype="float32", crs=utm_crs.to_wkt(), transform=transform,
+        compress="deflate",
+    ) as dst:
+        dst.write(H, 1)
+    feedback.pushInfo(f"Size raster written -> {out_path}")
+    return out_path, utm_crs
+
+
 def load_hfun_raster(hfun_path):
     """Load a size raster (stage 2 output) into a fast callable size function.
 
