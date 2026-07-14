@@ -216,6 +216,125 @@ def _resample_ring_hfun(ring_coords, hfun, harg=()):
     return np.vstack([node, node[0:1]])
 
 
+def _resample_arc_hfun(arc_coords, hfun, harg=()):
+    """Resample one open polyline (arc) using a mesh-size function.
+
+    Both endpoints are preserved exactly; interior nodes are equidistributed
+    in arc length weighted by ``1/h(p)``, like :func:`_resample_ring_hfun`.
+
+    Parameters
+    ----------
+    arc_coords : ndarray of shape (N, 2)
+        Coordinates of the arc vertices (open polyline, N >= 2).
+    hfun : float or callable
+        Mesh-size function.
+    harg : tuple, optional
+        Extra arguments passed to hfun when callable.
+
+    Returns
+    -------
+    ndarray of shape (M, 2)
+        Resampled arc coordinates (M >= 2, endpoints unchanged).
+    """
+    arc = np.asarray(arc_coords, dtype=float)
+    if arc.shape[0] < 2:
+        return arc
+
+    seg = np.diff(arc, axis=0)
+    eps = np.finfo(float).eps
+    seg_len = np.maximum(np.linalg.norm(seg, axis=1), eps)
+    s_cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    s_total = s_cum[-1]
+    if s_total <= 0:
+        return arc[[0, -1]]
+
+    def s_to_xy(s):
+        s = np.clip(np.asarray(s, dtype=float), 0.0, s_total)
+        i = np.clip(np.searchsorted(s_cum, s, side="right") - 1, 0, len(seg_len) - 1)
+        t = (s - s_cum[i]) / seg_len[i]
+        return (1.0 - t)[:, None] * arc[i] + t[:, None] * arc[i + 1]
+
+    eval_h = _make_hfun_evaluator(arc, hfun, harg)
+
+    h_min = np.nanmin(eval_h(arc))
+    if not np.isfinite(h_min) or h_min <= 0:
+        h_min = max(s_total * 0.01, eps)
+    ds_fine = max(min(h_min / 4.0, s_total / 200.0), s_total / 20000.0)
+    n_fine = int(np.ceil(s_total / ds_fine)) + 1
+    s_fine = np.linspace(0.0, s_total, n_fine)
+    h_fine = eval_h(s_to_xy(s_fine))
+    h_fine = np.where(np.isfinite(h_fine) & (h_fine > 0), h_fine, h_min)
+    inv_h = 1.0 / h_fine
+    integral = np.concatenate(
+        [[0.0], np.cumsum(0.5 * (inv_h[1:] + inv_h[:-1]) * np.diff(s_fine))]
+    )
+    total_units = integral[-1]
+
+    # Equidistribute with the endpoints pinned: n_seg edges of ~h(p) each.
+    n_seg = max(int(round(total_units)), 1)
+    t_targets = np.linspace(0.0, total_units, n_seg + 1)
+    pts = s_to_xy(np.interp(t_targets, integral, s_fine))
+    pts[0] = arc[0]
+    pts[-1] = arc[-1]
+    return pts
+
+
+def _resample_ring_parts(ring_coords, labels, hfun, harg=()):
+    """Resample a closed ring arc-by-arc between part transitions.
+
+    Vertices where the edge part label changes are treated as fixed points:
+    they are preserved exactly and each arc between two consecutive fixed
+    points is resampled independently with :func:`_resample_arc_hfun`.
+
+    Parameters
+    ----------
+    ring_coords : ndarray of shape (N, 2)
+        Open ring coordinates (no duplicated closing point).
+    labels : ndarray of shape (N,), dtype int
+        Part label of edge ``i`` (joining vertex ``i`` to ``i+1 mod N``).
+    hfun : float or callable
+        Mesh-size function.
+    harg : tuple, optional
+        Extra arguments passed to hfun when callable.
+
+    Returns
+    -------
+    ring : ndarray of shape (M, 2)
+        Resampled ring (closed, first point repeated at end).
+    protect : ndarray of shape (M-1,), dtype bool
+        True at the fixed (part-junction) vertices of the open ring.
+    """
+    ring = np.asarray(ring_coords, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    n = ring.shape[0]
+
+    # vertex i is fixed when the labels of its two incident edges differ
+    breaks = [i for i in range(n) if labels[i - 1] != labels[i]]
+    if len(breaks) < 2:
+        # 0 breaks: uniform ring; 1 break cannot happen on a closed ring
+        closed = _resample_ring_hfun(ring, hfun, harg)
+        return closed, np.zeros(max(len(closed) - 1, 0), dtype=bool)
+
+    pieces = []
+    protect = []
+    for k, i0 in enumerate(breaks):
+        i1 = breaks[(k + 1) % len(breaks)]
+        if i1 > i0:
+            arc = ring[i0 : i1 + 1]
+        else:  # wrap around the seam
+            arc = np.vstack([ring[i0:], ring[: i1 + 1]])
+        res = _resample_arc_hfun(arc, hfun, harg)
+        # drop the shared endpoint (added by the next arc's first vertex)
+        pieces.append(res[:-1])
+        protect.append(
+            np.concatenate([[True], np.zeros(len(res) - 2, dtype=bool)])
+        )
+
+    pts = np.vstack(pieces)
+    protect = np.concatenate(protect)
+    return np.vstack([pts, pts[0:1]]), protect
+
+
 def _make_hfun_evaluator(reference_pts, hfun, harg=()):
     """Build a mesh-size evaluator with NaN filled from the nearest reference vertex."""
 
@@ -302,8 +421,12 @@ def _ring_interior_angles(pts):
     return ang
 
 
-def _prune_ring_by_angle(ring_coords, min_angle_deg):
-    """Remove vertices at sharp interior angles from a closed ring."""
+def _prune_ring_by_angle(ring_coords, min_angle_deg, protect=None):
+    """Remove vertices at sharp interior angles from a closed ring.
+
+    ``protect`` is an optional boolean mask over the open ring's vertices
+    (``ring_coords[:-1]``); protected vertices are never removed.
+    """
     if min_angle_deg <= 0:
         return ring_coords
     ring = np.asarray(ring_coords, dtype=float)
@@ -312,19 +435,28 @@ def _prune_ring_by_angle(ring_coords, min_angle_deg):
     pts = ring[:-1].copy() if np.allclose(ring[0], ring[-1]) else ring.copy()
     if len(pts) < 3:
         return ring
+    if protect is None:
+        prot = np.zeros(len(pts), dtype=bool)
+    else:
+        prot = np.asarray(protect, dtype=bool)[: len(pts)].copy()
 
     for _ in range(len(pts) * 2):
         if len(pts) <= 3:
             break
         ang = _ring_interior_angles(pts)
-        sharp = ang < min_angle_deg
+        sharp = (ang < min_angle_deg) & ~prot
         if not sharp.any():
             break
         keep = ~sharp
         if keep.sum() < 3:  # never drop below a valid triangle
-            keep = np.zeros(len(pts), dtype=bool)
-            keep[np.argsort(ang)[-3:]] = True
+            keep = prot.copy()
+            order = np.argsort(ang)[::-1]
+            for j in order:
+                if keep.sum() >= 3:
+                    break
+                keep[j] = True
         pts = pts[keep]
+        prot = prot[keep]
 
     if len(pts) < 3:
         return ring
@@ -337,12 +469,18 @@ def resample_polygon_hfun(
     harg=(),
     min_angle_deg=25,
     min_hole_vertices=15,
+    part=None,
 ):
     """Resample a polygon boundary at approximately ``h(p)`` spacing.
 
     Nodes are equidistributed in arc length weighted by the mesh-size function.
     NaN values from ``hfun`` are replaced by the value at the nearest polygon
     vertex. Optional angle pruning and hole filtering are applied per ring.
+
+    When ``part`` is given, the boundary is resampled iteratively between
+    fixed points: every vertex where two different parts meet is preserved
+    exactly, and each arc between two consecutive fixed points is resampled
+    independently (fixed points are also protected from angle pruning).
 
     Parameters
     ----------
@@ -363,6 +501,14 @@ def resample_polygon_hfun(
         Drop holes (interiors) that end up with fewer than this many vertices
         after resampling and angle pruning. Default 4 (the minimum for a valid
         ring); raise it to discard small gaps.
+    part : list of ndarray, optional
+        Boundary partition, same form as ``refine``'s ``part`` argument: each
+        entry is an array of 0-based boundary-edge indices defining one part.
+        Edges are numbered like :func:`polygon_to_node_edge` builds them:
+        edge ``i`` joins boundary vertex ``i`` to vertex ``i+1`` around each
+        ring (exterior ring first, then each hole in order). Edges listed in
+        no part form an implicit extra part. Vertices where two parts meet
+        are kept fixed by the resampling.
 
     Returns
     -------
@@ -405,10 +551,35 @@ def resample_polygon_hfun(
 
     if polygon.ndim != 2 or polygon.shape[1] != 2:
         raise ValueError("polygon must be a Shapely Polygon or an (N, 2) array")
-    
+
+    # Per-ring edge part labels (edge i joins ring vertex i to i+1 mod N;
+    # global numbering: exterior edges first, then each hole's, in order)
+    ring_sizes = [len(polygon)] + [len(r) for r in interiors]
+    nedge_total = sum(ring_sizes)
+    ring_labels = [None] * len(ring_sizes)
+    if part is not None:
+        labels_global = np.full(nedge_total, -1, dtype=int)
+        for k, p in enumerate(part):
+            p = np.asarray(p, dtype=int).ravel()
+            if p.size and (p.min() < 0 or p.max() >= nedge_total):
+                raise ValueError(
+                    "resample_polygon_hfun: invalid PART edge indices")
+            labels_global[p] = k
+        offset = 0
+        for r, sz in enumerate(ring_sizes):
+            lab = labels_global[offset : offset + sz]
+            if np.unique(lab).size > 1:  # ring crosses part boundaries
+                ring_labels[r] = lab
+            offset += sz
+
     # Resample exterior, then remove sharp "closed angle" spikes
-    exterior_ring = _resample_ring_hfun(polygon, hfun, harg)
-    exterior_ring = _prune_ring_by_angle(exterior_ring, min_angle_deg)
+    if ring_labels[0] is not None:
+        exterior_ring, prot = _resample_ring_parts(
+            polygon, ring_labels[0], hfun, harg)
+        exterior_ring = _prune_ring_by_angle(exterior_ring, min_angle_deg, prot)
+    else:
+        exterior_ring = _resample_ring_hfun(polygon, hfun, harg)
+        exterior_ring = _prune_ring_by_angle(exterior_ring, min_angle_deg)
     exterior_ring = _ensure_ring_orientation(exterior_ring, want_ccw=True)
 
     # Ensure exterior has at least 4 points (required for LinearRing)
@@ -420,9 +591,16 @@ def resample_polygon_hfun(
     min_hole_vertices = max(int(min_hole_vertices), 4)
     resampled_interiors = []
     if has_interiors:
-        for interior_coords in interiors:
-            resampled_interior = _resample_ring_hfun(interior_coords, hfun, harg)
-            resampled_interior = _prune_ring_by_angle(resampled_interior, min_angle_deg)
+        for hidx, interior_coords in enumerate(interiors):
+            lab = ring_labels[1 + hidx]
+            if lab is not None:
+                resampled_interior, prot = _resample_ring_parts(
+                    interior_coords, lab, hfun, harg)
+                resampled_interior = _prune_ring_by_angle(
+                    resampled_interior, min_angle_deg, prot)
+            else:
+                resampled_interior = _resample_ring_hfun(interior_coords, hfun, harg)
+                resampled_interior = _prune_ring_by_angle(resampled_interior, min_angle_deg)
             # Drop holes ("gaps") with too few vertices (need >= 4 for a ring)
             n_distinct = len(resampled_interior)
             if n_distinct > 1 and np.allclose(resampled_interior[0], resampled_interior[-1]):
