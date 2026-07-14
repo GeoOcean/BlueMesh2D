@@ -824,6 +824,38 @@ def load_hfun_raster(hfun_path):
 # Stage 3: polygon + hfun -> resampled boundary + PSLG
 # ===========================================================================
 
+def _fixed_part_from_z(poly):
+    """Split a Z-flagged polygon into 2D geometry + resample ``part`` lists.
+
+    Stage 1 marks vertices lying on the extent polygon boundary with Z=1
+    (Z=0 elsewhere). Every boundary edge whose two endpoints are flagged is
+    returned as its own part, so ``resample_polygon_hfun`` keeps all flagged
+    vertices exactly. Returns ``(poly, None)`` unchanged for 2D polygons.
+    """
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    if not getattr(poly, "has_z", False):
+        return poly, None
+
+    rings = [np.asarray(poly.exterior.coords)]
+    rings += [np.asarray(r.coords) for r in poly.interiors]
+    part = []
+    rings2d = []
+    offset = 0
+    for r in rings:
+        pts = r[:-1] if len(r) > 1 and np.allclose(r[0, :2], r[-1, :2]) else r
+        flag = pts[:, 2] > 0.5 if pts.shape[1] > 2 else np.zeros(len(pts), bool)
+        n = len(pts)
+        for i in range(n):
+            if flag[i] and flag[(i + 1) % n]:
+                part.append(np.array([offset + i]))
+        rings2d.append(pts[:, :2])
+        offset += n
+    poly2d = Polygon(rings2d[0], rings2d[1:])
+    return poly2d, (part if part else None)
+
+
 def resample_boundary(poly, hfuns, min_angle_deg=25.0, min_hole_vertices=15,
                       feedback=None):
     """Resample the water polygon to the size function and build the PSLG.
@@ -869,10 +901,17 @@ def resample_boundary(poly, hfuns, min_angle_deg=25.0, min_hole_vertices=15,
     feedback.pushInfo(f"Water region(s) to mesh: {len(parts)}")
 
     resampled = []
+    n_fixed_total = 0
     for part in parts:
-        rp = resample_polygon_hfun(part, hfuns,
+        part2d, fixed_part = _fixed_part_from_z(part)
+        if fixed_part is not None:
+            # each fixed edge is its own part: every flagged vertex is a
+            # part junction and survives the resampling exactly
+            n_fixed_total += len(fixed_part)
+        rp = resample_polygon_hfun(part2d, hfuns,
                                    min_angle_deg=min_angle_deg,
-                                   min_hole_vertices=min_hole_vertices)
+                                   min_hole_vertices=min_hole_vertices,
+                                   part=fixed_part)
         # drop parts that degenerate (smaller than the local element size)
         if rp is not None and not rp.is_empty and rp.geom_type == "Polygon" \
                 and len(rp.exterior.coords) >= 4:
@@ -886,6 +925,11 @@ def resample_boundary(poly, hfuns, min_angle_deg=25.0, min_hole_vertices=15,
         feedback.pushInfo(
             f"Dropped {len(parts) - len(resampled)} water region(s) smaller "
             "than the local element size.")
+
+    if n_fixed_total:
+        feedback.pushInfo(
+            f"Fixed vertices (extent boundary) preserved: ~{n_fixed_total} "
+            "flagged edges")
 
     poly_comput = resampled[0] if len(resampled) == 1 else MultiPolygon(resampled)
     node, edge = polygon_to_node_edge(poly_comput)

@@ -121,6 +121,20 @@ def _num(alg, name, label, default, minv=-1e9, maxv=1e9, integer=False,
     alg.addParameter(p)
 
 
+def _shapely_from_qgis(g):
+    """Convert a QgsGeometry to shapely, tolerating QGIS's Z/M WKT spelling.
+
+    QGIS writes ``PolygonZ (...)`` while shapely's reader needs
+    ``Polygon Z (...)``; insert the missing space in the type token.
+    """
+    import re
+
+    from shapely import wkt as shapely_wkt
+
+    s = re.sub(r"^\s*([A-Za-z]+?)(ZM|Z|M)\s*\(", r"\1 \2 (", g.asWkt(), count=1)
+    return shapely_wkt.loads(s)
+
+
 def _source_to_shapely(source, target_crs=None):
     """Union all polygon features of a source into one shapely geometry.
 
@@ -138,7 +152,6 @@ def _source_to_shapely(source, target_crs=None):
         Union of all feature geometries, or ``None`` if `source` has no
         usable geometry.
     """
-    from shapely import wkt as shapely_wkt
     from shapely.ops import unary_union
 
     xform = None
@@ -154,7 +167,7 @@ def _source_to_shapely(source, target_crs=None):
         if xform is not None:
             g = QgsGeometry(g)
             g.transform(xform)
-        geoms.append(shapely_wkt.loads(g.asWkt()))
+        geoms.append(_shapely_from_qgis(g))
     if not geoms:
         return None
     return unary_union(geoms)
@@ -173,14 +186,13 @@ def _source_to_segments(source):
     segments : list of list of tuple
         One ``[(x, y), ...]`` list per ``LineString`` feature/part.
     """
-    from shapely import wkt as shapely_wkt
 
     segments = []
     for feat in source.getFeatures():
         g = feat.geometry()
         if g is None or g.isEmpty():
             continue
-        geom = shapely_wkt.loads(g.asWkt())
+        geom = _shapely_from_qgis(g)
         lines = geom.geoms if hasattr(geom, "geoms") else [geom]
         for line in lines:
             if line.geom_type == "LineString" and len(line.coords) >= 2:
@@ -201,14 +213,13 @@ def _source_to_points(source):
     points : list of tuple
         One ``(x, y)`` tuple per point.
     """
-    from shapely import wkt as shapely_wkt
 
     points = []
     for feat in source.getFeatures():
         g = feat.geometry()
         if g is None or g.isEmpty():
             continue
-        geom = shapely_wkt.loads(g.asWkt())
+        geom = _shapely_from_qgis(g)
         parts = geom.geoms if hasattr(geom, "geoms") else [geom]
         for p in parts:
             if p.geom_type == "Point":
@@ -271,11 +282,33 @@ class _BaseAlg(QgsProcessingAlgorithm):
 # 1. Extract water polygon
 # ---------------------------------------------------------------------------
 
+def _flag_fixed_vertices(p, ext_boundary, tol):
+    """Return a PolygonZ copy of ``p`` with Z=1 on vertices on ``ext_boundary``.
+
+    Vertices farther than ``tol`` from the extent boundary get Z=0. The Z
+    flag travels inside the polygon geometry to stage 3, which keeps the
+    flagged vertices fixed while resampling.
+    """
+    import numpy as np
+    from shapely.geometry import Point, Polygon
+
+    def ring3(coords):
+        out = []
+        for x, y in np.asarray(coords)[:, :2]:
+            z = 1.0 if ext_boundary.distance(Point(x, y)) <= tol else 0.0
+            out.append((x, y, z))
+        return out
+
+    return Polygon(ring3(p.exterior.coords),
+                   [ring3(r.coords) for r in p.interiors])
+
+
 class ExtractWaterPolygonAlgorithm(_BaseAlg):
     RASTER = "RASTER"
     COAST_ZMAX = "COAST_ZMAX"
     DEEP_ZMAX = "DEEP_ZMAX"
     EXTENT = "EXTENT"
+    FIX_EXTENT_VERTS = "FIX_EXTENT_VERTS"
     DOMAIN_BUFFER = "DOMAIN_BUFFER"
     KEEP_LARGEST = "KEEP_LARGEST"
     OUTPUT = "OUTPUT"
@@ -301,7 +334,10 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
                 "when set, the raster is clipped to it before the contour "
                 "extraction (much faster on large rasters) and the buffer is "
                 "ignored. Without it, the raster's data extent is used, "
-                "grown/shrunk by the domain buffer factor. Output feeds "
+                "grown/shrunk by the domain buffer factor. With 'Fix polygon "
+                "vertices' (default on), vertices lying on the extent "
+                "boundary are marked inside the polygon (Z=1) and stage 3 "
+                "keeps them exactly while resampling. Output feeds "
                 "'3 - Resample boundary'.")
 
     def createInstance(self):
@@ -318,6 +354,10 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.EXTENT, "Extent polygon (optional; default = raster extent)",
             [QgsProcessing.TypeVectorPolygon], optional=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.FIX_EXTENT_VERTS,
+            "Fix polygon vertices on the extent boundary (kept exactly by "
+            "stage 3 resampling)", defaultValue=True))
         _num(self, self.DOMAIN_BUFFER,
              "Domain buffer factor (negative shrinks; ignored if an extent "
              "polygon is set)", -0.05, -10, 10)
@@ -361,21 +401,39 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         # the metric local-UTM CRS stays internal to the pipeline.
         from bluemesh2d.geom_util.proj_util import reproject_geometry
 
+        fix_verts = (extent_geom is not None and self.parameterAsBool(
+            parameters, self.FIX_EXTENT_VERTS, context))
+
         fields = QgsFields()
         fields.append(QgsField("id", QVariant.Int))
         fields.append(QgsField("area_km2", QVariant.Double))
         sink, dest_id = self.parameterAsSink(
             parameters, self.OUTPUT, context, fields,
-            QgsWkbTypes.MultiPolygon, raster.crs())
+            QgsWkbTypes.MultiPolygonZ if fix_verts else QgsWkbTypes.MultiPolygon,
+            raster.crs())
+
+        if fix_verts:
+            # cut vertices lie exactly on the extent boundary (shapely
+            # intersection); a fraction of a pixel absorbs reprojection noise
+            ext_boundary = extent_geom.boundary
+            tol = 1e-3 * max(raster.rasterUnitsPerPixelX(),
+                             raster.rasterUnitsPerPixelY())
 
         parts = list(poly.geoms) if hasattr(poly, "geoms") else [poly]
+        n_fixed = 0
         for i, p in enumerate(parts):
             area_km2 = p.area / 1e6  # metric area, computed in UTM
             p = reproject_geometry(p, utm_crs, raster_crs)
+            if fix_verts:
+                p = _flag_fixed_vertices(p, ext_boundary, tol)
+                n_fixed += sum(int(c[2] > 0.5) for c in p.exterior.coords[:-1])
             f = QgsFeature(fields)
             f.setGeometry(QgsGeometry.fromWkt(p.wkt))
             f.setAttributes([i, area_km2])
             sink.addFeature(f)
+        if fix_verts:
+            fb.pushInfo(f"Fixed vertices on the extent boundary: {n_fixed} "
+                        "(stored as Z=1; kept exactly by stage 3).")
         return {self.OUTPUT: dest_id}
 
 
@@ -939,7 +997,6 @@ def _boundary_lines_by_type(source, target_crs):
     Features without a ``btype`` attribute are treated as ``'closed'``.
     """
     import numpy as np
-    from shapely import wkt as shapely_wkt
 
     xform = None
     src_crs = source.sourceCrs()
@@ -984,7 +1041,7 @@ def _boundary_lines_by_type(source, target_crs):
             g = QgsGeometry(g)
             g.transform(xform)
         bt = str(feat["btype"]) if has_btype else "closed"
-        geom = shapely_wkt.loads(g.asWkt())
+        geom = _shapely_from_qgis(g)
         parts = geom.geoms if hasattr(geom, "geoms") else [geom]
         for line in parts:
             if line.geom_type == "LineString" and len(line.coords) >= 2:
