@@ -691,6 +691,35 @@ class BuildHfunCustomAlgorithm(_BuildHfunBase):
 # 3. Resample boundary
 # ---------------------------------------------------------------------------
 
+class BuildHfunConstantAlgorithm(_BuildHfunBase):
+    METHOD = "constant"
+    H_CONST = "H_CONST"
+
+    def name(self):
+        return "build_hfun_constant"
+
+    def displayName(self):
+        return "2d - Constant value"
+
+    def shortHelpString(self):
+        return ("Element-size raster with a single constant value everywhere "
+                "(uniform mesh). The value is still floored at Min element "
+                "size (Detail min size inside the detail polygons), capped "
+                "at Max element size, then gradient-limited -- with a "
+                "detail region this gives a uniform mesh locally refined "
+                "there. Saved as a GeoTIFF in the working CRS; feeds stages "
+                "3 and 4.")
+
+    def initAlgorithm(self, config=None):
+        self._add_inputs()
+        _num(self, self.H_CONST, "Element size (m)", 1000.0, 0.1)
+        self._add_limits()
+
+    def _method_kwargs(self, parameters, context):
+        return dict(
+            h_const=self.parameterAsDouble(parameters, self.H_CONST, context))
+
+
 class ResampleBoundaryAlgorithm(_BaseAlg):
     WATER = "WATER"
     HFUN = "HFUN"
@@ -1644,6 +1673,7 @@ ALL_ALGORITHMS = (
     BuildHfunPolynomialAlgorithm,
     BuildHfunWavelengthAlgorithm,
     BuildHfunCustomAlgorithm,
+    BuildHfunConstantAlgorithm,
     ResampleBoundaryAlgorithm,
     GenerateMeshFromBoundaryAlgorithm,
     GenerateBoundaryConditionsAlgorithm,

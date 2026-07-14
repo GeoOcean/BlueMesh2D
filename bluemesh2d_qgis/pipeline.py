@@ -467,7 +467,7 @@ def _compile_custom_hfun(code):
 def _make_depth_hfun(depth_field, method="polynomial",
                      a=0.14, b=28.0,
                      wave_period=12.0, cells_per_wavelength=20, zmin=1.0,
-                     custom_code=None,
+                     custom_code=None, h_const=1000.0,
                      hmin=100.0, hmax=10000.0, detail=None, detail_hmin=None,
                      slope_ncells=None, slope_step=500.0, slope_hmin=None):
     """Build a depth-based mesh-size function, one of three sizing laws.
@@ -481,11 +481,13 @@ def _make_depth_hfun(depth_field, method="polynomial",
         ``depth_field(xy) -> d``, depth (m) at query points ``xy`` of shape
         ``(N, 2)``. May expose a ``.bounds`` attribute, propagated to the
         returned function.
-    method : {'polynomial', 'wavelength', 'custom'}, optional
+    method : {'polynomial', 'wavelength', 'custom', 'constant'}, optional
         Sizing law. ``'polynomial'``: ``h = a*d**2 + b*d``.
         ``'wavelength'``: ``h = L(T, d) / N`` (Hunt-1979 dispersion, see
         ``hfun_wavenumhunt``). ``'custom'``: user Python, see
-        :func:`_compile_custom_hfun`. Default is ``'polynomial'``.
+        :func:`_compile_custom_hfun`. ``'constant'``: ``h = h_const``
+        everywhere (see ``bluemesh2d.hfun_util.make_constant_hfun``).
+        Default is ``'polynomial'``.
     a, b : float, optional
         Coefficients for the ``'polynomial'`` method. Defaults are 0.14 and
         28.0.
@@ -501,6 +503,8 @@ def _make_depth_hfun(depth_field, method="polynomial",
     custom_code : str or None, optional
         Python code for the ``'custom'`` method, see
         :func:`_compile_custom_hfun`. Required when ``method='custom'``.
+    h_const : float, optional
+        Element size (m) for the ``'constant'`` method. Default is 1000.0.
     hmin, hmax : float, optional
         Element-size floor and cap (m). Defaults are 100.0 and 10000.0.
     detail : shapely.geometry.base.BaseGeometry or None, optional
@@ -532,11 +536,15 @@ def _make_depth_hfun(depth_field, method="polynomial",
     import numpy as np
     import shapely
 
-    if method not in ("polynomial", "wavelength", "custom"):
-        raise ValueError("method must be 'polynomial', 'wavelength' or 'custom'")
+    if method not in ("polynomial", "wavelength", "custom", "constant"):
+        raise ValueError(
+            "method must be 'polynomial', 'wavelength', 'custom' or 'constant'")
     if method == "custom" and not custom_code:
         raise ValueError("method='custom' needs `custom_code`")
     custom = _compile_custom_hfun(custom_code) if method == "custom" else None
+    if method == "constant":
+        from bluemesh2d.hfun_util.make_constant_hfun import make_constant_hfun
+        const_fun = make_constant_hfun(h_const)
 
     detail_mask = None
     if detail is not None and detail_hmin is not None:
@@ -555,7 +563,9 @@ def _make_depth_hfun(depth_field, method="polynomial",
         xy = np.atleast_2d(np.asarray(test, dtype=float))
         d = np.asarray(depth_field(xy), dtype=float).reshape(-1)
         d = np.where(d < 0, 0.0, d)
-        if method == "polynomial":
+        if method == "constant":
+            values = const_fun(xy)
+        elif method == "polynomial":
             values = a * d ** 2 + b * d
         elif method == "wavelength":
             from bluemesh2d.hfun_util.hfun_dispersion import hfun_wavenumhunt
@@ -584,7 +594,7 @@ def _make_depth_hfun(depth_field, method="polynomial",
 def build_hfun_raster(raster_path, out_path, method="polynomial",
                       a=0.14, b=28.0,
                       wave_period=12.0, cells_per_wavelength=20, zmin=1.0,
-                      custom_code=None,
+                      custom_code=None, h_const=1000.0,
                       hmin=100.0, hmax=10000.0,
                       detail_geom=None, detail_hmin=None,
                       domain_geom=None,
@@ -606,7 +616,7 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
         Path to the bathymetry raster (elevation, positive up).
     out_path : str
         Output GeoTIFF path.
-    method : {'polynomial', 'wavelength', 'custom'}, optional
+    method : {'polynomial', 'wavelength', 'custom', 'constant'}, optional
         Sizing law, see :func:`_make_depth_hfun`. Default is
         ``'polynomial'``.
     a, b : float, optional
@@ -705,6 +715,7 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
                             wave_period=wave_period,
                             cells_per_wavelength=cells_per_wavelength,
                             zmin=zmin, custom_code=custom_code,
+                            h_const=h_const,
                             hmin=hmin, hmax=hmax,
                             detail=detail_u,
                             detail_hmin=(detail_hmin if detail_u is not None else None),
