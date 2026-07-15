@@ -280,6 +280,83 @@ def smood_dependencies():
 # Stage 1: raster -> water-domain polygon
 # ===========================================================================
 
+def _flag_fixed_vertices(p, ext_boundary, tol):
+    """Return a PolygonZ copy of ``p`` with Z=1 on vertices on ``ext_boundary``.
+
+    Vertices farther than ``tol`` from the extent boundary get Z=0. The Z
+    flag travels inside the polygon geometry to stage 3, which keeps the
+    flagged vertices fixed while resampling. The first and last vertex of
+    each fixed run (the junctions with the coastline) are additionally
+    projected exactly onto the extent boundary -- a sub-``tol`` move -- so
+    the run ends at the true intersection; no other vertex is moved.
+    """
+    import numpy as np
+    from shapely.geometry import Point, Polygon
+
+    def ring3(coords):
+        pts = np.asarray(coords, dtype=float)[:, :2]
+        closed = len(pts) > 1 and np.allclose(pts[0], pts[-1])
+        core = pts[:-1] if closed else pts
+        n = len(core)
+        flag = np.array(
+            [ext_boundary.distance(Point(x, y)) <= tol for x, y in core])
+        out = [(x, y, 1.0 if f else 0.0)
+               for (x, y), f in zip(core, flag)]
+        if n >= 2:
+            for i in range(n):
+                if flag[i] and (not flag[i - 1] or not flag[(i + 1) % n]):
+                    q = ext_boundary.interpolate(
+                        ext_boundary.project(Point(core[i])))
+                    out[i] = (q.x, q.y, 1.0)
+        if closed:
+            out.append(out[0])
+        return out
+
+    return Polygon(ring3(p.exterior.coords),
+                   [ring3(r.coords) for r in p.interiors])
+
+
+def _prune_nonoriginal_fixed(p, keep_xy, tol=1e-3):
+    """Remove fixed (Z=1) vertices that are neither run endpoints nor listed.
+
+    ``keep_xy`` holds the extent polygon's *original* vertex coordinates
+    (working CRS). Fixed vertices introduced only to follow the reprojected
+    outline (densification points) are deleted from the ring, so the output
+    keeps just the original extent vertices plus the two coastline-junction
+    points of each fixed run. Free (Z=0) vertices are never touched.
+    """
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    keep_xy = np.asarray(keep_xy, dtype=float).reshape(-1, 2)
+
+    def ring3(coords):
+        pts = np.asarray(coords, dtype=float)
+        closed = len(pts) > 1 and np.allclose(pts[0], pts[-1])
+        core = pts[:-1] if closed else pts
+        n = len(core)
+        flag = core[:, 2] > 0.5
+        keep = np.ones(n, dtype=bool)
+        for i in range(n):
+            if not flag[i]:
+                continue
+            if not flag[i - 1] or not flag[(i + 1) % n]:
+                continue  # run endpoint: coastline junction, always kept
+            if keep_xy.size:
+                d2 = np.sum((keep_xy - core[i, :2]) ** 2, axis=1)
+                if d2.min() <= tol * tol:
+                    continue  # original extent vertex, kept
+            keep[i] = False
+        core = core[keep]
+        out = [tuple(c) for c in core]
+        if closed and out:
+            out.append(out[0])
+        return out
+
+    return Polygon(ring3(p.exterior.coords),
+                   [ring3(r.coords) for r in p.interiors])
+
+
 def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
                           deep_zmax=None, extent_geom=None, keep_largest=True,
                           feedback=None):

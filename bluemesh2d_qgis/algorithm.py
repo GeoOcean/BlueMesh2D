@@ -57,6 +57,8 @@ from qgis.core import (
 from .pipeline import (
     MeshCanceled,
     MeshConfig,
+    _flag_fixed_vertices,
+    _prune_nonoriginal_fixed,
     boundary_lines_from_points,
     build_hfun_constant_raster,
     build_hfun_raster,
@@ -136,7 +138,7 @@ def _shapely_from_qgis(g):
     return shapely_wkt.loads(s)
 
 
-def _source_to_shapely(source, target_crs=None):
+def _source_to_shapely(source, target_crs=None, densify=None):
     """Union all polygon features of a source into one shapely geometry.
 
     Parameters
@@ -146,6 +148,12 @@ def _source_to_shapely(source, target_crs=None):
     target_crs : QgsCoordinateReferenceSystem or None, optional
         If given, features are reprojected into it before conversion.
         Default is ``None``.
+    densify : int or None, optional
+        If given, add this many extra vertices per segment *before*
+        reprojecting. Long straight edges reprojected vertex-by-vertex
+        become chords that deviate from the true (displayed) edge; the
+        extra vertices keep the reprojected outline on it. Default is
+        ``None`` (no densification).
 
     Returns
     -------
@@ -165,6 +173,8 @@ def _source_to_shapely(source, target_crs=None):
         g = feat.geometry()
         if g is None or g.isEmpty():
             continue
+        if densify:
+            g = g.densifyByCount(int(densify))
         if xform is not None:
             g = QgsGeometry(g)
             g.transform(xform)
@@ -283,25 +293,27 @@ class _BaseAlg(QgsProcessingAlgorithm):
 # 1. Extract water polygon
 # ---------------------------------------------------------------------------
 
-def _flag_fixed_vertices(p, ext_boundary, tol):
-    """Return a PolygonZ copy of ``p`` with Z=1 on vertices on ``ext_boundary``.
+def _reproject_polygon_keep_z(p, crs_from, crs_to):
+    """Reproject a polygon's XY coordinates, preserving vertex order and Z.
 
-    Vertices farther than ``tol`` from the extent boundary get Z=0. The Z
-    flag travels inside the polygon geometry to stage 3, which keeps the
-    flagged vertices fixed while resampling.
+    Unlike ``reproject_geometry`` (which drops Z and may rebuild rings via
+    ``buffer(0)``), this transforms each vertex in place so per-vertex flags
+    stored in Z survive.
     """
-    import numpy as np
-    from shapely.geometry import Point, Polygon
+    import pyproj
+    from shapely.geometry import Polygon
 
-    def ring3(coords):
-        out = []
-        for x, y in np.asarray(coords)[:, :2]:
-            z = 1.0 if ext_boundary.distance(Point(x, y)) <= tol else 0.0
-            out.append((x, y, z))
-        return out
+    tr = pyproj.Transformer.from_crs(crs_from, crs_to, always_xy=True)
 
-    return Polygon(ring3(p.exterior.coords),
-                   [ring3(r.coords) for r in p.interiors])
+    def ring(coords):
+        xs = [c[0] for c in coords]
+        ys = [c[1] for c in coords]
+        zs = [(c[2] if len(c) > 2 else 0.0) for c in coords]
+        X, Y = tr.transform(xs, ys)
+        return list(zip(X, Y, zs))
+
+    return Polygon(ring(p.exterior.coords),
+                   [ring(r.coords) for r in p.interiors])
 
 
 class ExtractWaterPolygonAlgorithm(_BaseAlg):
@@ -380,7 +392,15 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         extent_geom = None
         extent_src = self.parameterAsSource(parameters, self.EXTENT, context)
         if extent_src is not None:
-            extent_geom = _source_to_shapely(extent_src, raster.crs())
+            # densify before reprojection: without it, long extent edges
+            # become straight chords in the working CRS that deviate from
+            # the true (displayed) edge, shifting the cut line and the
+            # coast-intersection points sideways
+            extent_geom = _source_to_shapely(extent_src, raster.crs(),
+                                             densify=20)
+            # original vertices (no densification): the only extent points
+            # that may stay as fixed vertices in the output polygon
+            extent_orig = _source_to_shapely(extent_src, raster.crs())
             if extent_geom is None:
                 fb.pushWarning("Extent layer has no usable geometry; using the raster extent.")
 
@@ -414,20 +434,46 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
             raster.crs())
 
         if fix_verts:
-            # cut vertices lie exactly on the extent boundary (shapely
-            # intersection); a fraction of a pixel absorbs reprojection noise
-            ext_boundary = extent_geom.boundary
-            tol = 1e-3 * max(raster.rasterUnitsPerPixelX(),
-                             raster.rasterUnitsPerPixelY())
+            # Flag in the working (UTM) CRS, where the clip was computed: the
+            # cut vertices AND the two coast/extent intersection points lie
+            # exactly on this boundary there, so a small metric tolerance
+            # catches them all before any reprojection noise.
+            ext_utm = (extent_geom if utm_crs == raster_crs else
+                       reproject_geometry(extent_geom, raster_crs, utm_crs))
+            ext_boundary = ext_utm.boundary
+            tol = 1e-3  # metres
+
+            # original extent vertices in the working CRS
+            import numpy as np
+            import pyproj as _pyproj
+            _geoms = (extent_orig.geoms if hasattr(extent_orig, "geoms")
+                      else [extent_orig])
+            _pts = []
+            for _g in _geoms:
+                _pts += [(c[0], c[1]) for c in _g.exterior.coords[:-1]]
+                for _r in _g.interiors:
+                    _pts += [(c[0], c[1]) for c in _r.coords[:-1]]
+            orig_xy = np.asarray(_pts, dtype=float)
+            if utm_crs != raster_crs and orig_xy.size:
+                _tr = _pyproj.Transformer.from_crs(raster_crs, utm_crs,
+                                                   always_xy=True)
+                _x, _y = _tr.transform(orig_xy[:, 0], orig_xy[:, 1])
+                orig_xy = np.column_stack([_x, _y])
 
         parts = list(poly.geoms) if hasattr(poly, "geoms") else [poly]
         n_fixed = 0
         for i, p in enumerate(parts):
             area_km2 = p.area / 1e6  # metric area, computed in UTM
-            p = reproject_geometry(p, utm_crs, raster_crs)
             if fix_verts:
                 p = _flag_fixed_vertices(p, ext_boundary, tol)
+                # keep only original extent vertices + the run endpoints
+                # (coastline junctions); drop densification points
+                p = _prune_nonoriginal_fixed(p, orig_xy)
                 n_fixed += sum(int(c[2] > 0.5) for c in p.exterior.coords[:-1])
+                # plain per-vertex transform: keeps ring order and Z flags
+                p = _reproject_polygon_keep_z(p, utm_crs, raster_crs)
+            else:
+                p = reproject_geometry(p, utm_crs, raster_crs)
             f = QgsFeature(fields)
             f.setGeometry(QgsGeometry.fromWkt(p.wkt))
             f.setAttributes([i, area_km2])
