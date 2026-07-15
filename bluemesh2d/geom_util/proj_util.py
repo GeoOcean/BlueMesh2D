@@ -157,3 +157,33 @@ def reproject_geometry(geom, crs_from, crs_to):
 
     transformer = pyproj.Transformer.from_crs(crs_from, crs_to, always_xy=True)
     return transform(transformer.transform, geom).buffer(0)
+
+
+def _raster_crs(src):
+    """Build a pyproj CRS from an open rasterio dataset, robustly.
+
+    Prefer the EPSG code (a single, well-trodden PROJ database lookup) over
+    parsing the full WKT: the WKT parser resolves the datum against the PROJ
+    database and has been observed to hard-crash (access violation) in some
+    QGIS/PROJ builds. Falls back to WKT only when there is no EPSG code.
+
+    Parameters
+    ----------
+    src : rasterio.io.DatasetReader
+        Open rasterio dataset.
+
+    Returns
+    -------
+    crs : pyproj.CRS
+        CRS of ``src``.
+    """
+    import pyproj
+
+    try:
+        epsg = src.crs.to_epsg()
+    except Exception:
+        epsg = None
+    if epsg:
+        return pyproj.CRS.from_epsg(epsg)
+    return pyproj.CRS.from_wkt(src.crs.to_wkt())
+
