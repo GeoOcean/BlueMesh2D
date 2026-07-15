@@ -137,16 +137,31 @@ interpreter QGIS uses:
   ```
 - **macOS** — the official QGIS.app bundles its **own** Python, so a plain
   `python3 -m pip install` (Homebrew/system Python) installs into the wrong
-  interpreter. Use the bundled one explicitly, in a Terminal:
+  interpreter. The reliable way — it works on every bundle layout — is to run
+  pip from inside the **QGIS Python console** (Plugins > Python Console):
+  ```python
+  import pip
+  pip.main(["install", "--user", "rasterio", "netCDF4", "xarray", "contourpy"])   # + "triangle" (optional)
   ```
-  /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install rasterio netCDF4 xarray   # + triangle (optional)
+  then **restart QGIS**. `--user` installs into `~/Library/Python/3.x/...`,
+  which QGIS has on its path.
+
+  Notes on the Terminal route: on **recent QGIS bundles** (vcpkg-based,
+  ~3.40+) the bundled interpreter
+  (`/Applications/QGIS.app/Contents/MacOS/python3.12`) **cannot run
+  standalone** — it aborts with `ModuleNotFoundError: No module named
+  'encodings'` because its library prefix is baked to the build machine's
+  path — so use the Python-console method above. On **older bundles** the
+  Terminal command was:
   ```
-  (Adjust the app name if yours is e.g. `QGIS-LTR.app`.) Alternatively, run the
-  same `python3 -m pip install ...` line inside the **QGIS Python console**
-  wrapped in `import subprocess, sys; subprocess.check_call([sys.executable, "-m", "pip", "install", "rasterio", "netCDF4", "xarray"])`,
-  which is guaranteed to target QGIS's interpreter. If you installed QGIS via
-  **conda** (`conda install -c conda-forge qgis`), install the packages into
-  that same conda environment instead:
+  /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install rasterio netCDF4 xarray
+  ```
+  (Adjust the app name if yours is e.g. `QGIS-LTR.app`.) Do **not** use
+  `subprocess` with `sys.executable` from the QGIS console on macOS: there
+  `sys.executable` points to the QGIS application binary, not to Python.
+
+  If you installed QGIS via **conda** (`conda install -c conda-forge qgis`),
+  install the packages into that same conda environment instead:
   ```
   conda install -c conda-forge rasterio netcdf4 xarray
   ```
