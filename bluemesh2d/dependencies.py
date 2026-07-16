@@ -22,6 +22,9 @@ def check_dependencies():
     # contourpy is matplotlib's contouring backend, used by the stage-1
     # coastline extraction; some QGIS bundles (macOS vcpkg builds) ship
     # matplotlib without it, so it is checked explicitly.
+    # NOTE: keep this list in sync with REQUIRED in the QGIS plugin's
+    # deps_installer.py (kept separate on purpose: the installer must load
+    # even when this package is broken or missing).
     for mod in ("numpy", "scipy", "shapely", "rasterio", "pyproj",
                 "matplotlib", "contourpy", "netCDF4"):
         try:
