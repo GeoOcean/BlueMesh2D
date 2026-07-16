@@ -103,10 +103,27 @@ reprojection at all — and the output NetCDF carries metre units with a
 
 ### Python dependencies (important)
 
+**Automatic (recommended):** on first load the plugin checks QGIS's Python
+and, if packages are missing, opens a dialog listing them with an **Install
+now** button. pip runs inside QGIS's own interpreter — the right one on every
+platform — with `--user`. On Debian/Ubuntu system Python (PEP 668,
+"externally managed"), packages are installed into a small plugin-managed
+virtual environment (`.../profiles/<profile>/python/bluemesh2d_deps`,
+created with `--system-site-packages`) that the plugin adds to `sys.path`
+on load — the system Python is never modified and
+`--break-system-packages` is not needed. If that Python lacks pip entirely
+(no `python3-pip`), pip is bootstrapped into the venv automatically with
+the official `get-pip.py`. On conda-based QGIS the dialog
+shows the `conda install` command instead of running pip. Optional packages
+appear as opt-in checkboxes.
+Restart QGIS after installing. The same dialog can be reopened anytime from
+**Plugins ▸ BlueMesh2D ▸ Check / install dependencies**. The commands below
+are the manual fallback if the dialog's pip fails.
+
 Required in **QGIS's own Python** (all commonly present already):
 
 ```
-numpy  scipy  shapely  pyproj  matplotlib  rasterio  netCDF4
+numpy  scipy  shapely  pyproj  matplotlib  contourpy  rasterio  netCDF4
 ```
 
 Optional:

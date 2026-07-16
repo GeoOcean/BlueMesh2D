@@ -97,7 +97,9 @@ def _require_deps():
     if missing:
         raise QgsProcessingException(
             "Missing Python packages in the QGIS environment: "
-            + ", ".join(missing) + ". See the plugin README.")
+            + ", ".join(missing) + ". Install them via Plugins > BlueMesh2D "
+            "> 'Check / install dependencies', then restart QGIS "
+            "(manual commands: see the plugin README).")
 
 
 def _check_smood_deps(do_smood):

@@ -1,7 +1,7 @@
 import numpy as np
 import pyproj
 import rasterio
-from scipy.interpolate import LinearNDInterpolator, RBFInterpolator
+from scipy.interpolate import LinearNDInterpolator
 from scipy.ndimage import map_coordinates, distance_transform_edt
 from scipy.spatial import cKDTree
 
@@ -55,6 +55,16 @@ def interpolate_from_xyz(
         values_interp = z[idx]
 
     elif method == "rbf":
+        # lazy import: RBFInterpolator needs scipy >= 1.7, and old QGIS
+        # bundles (e.g. macOS LTR with scipy 1.5) must still be able to use
+        # the other methods
+        try:
+            from scipy.interpolate import RBFInterpolator
+        except ImportError as exc:
+            raise ImportError(
+                "method='rbf' needs scipy >= 1.7 (RBFInterpolator); this "
+                "environment has an older scipy -- use method='linear' or "
+                "'nearest' instead.") from exc
         interp = RBFInterpolator(points, z, kernel=rbf_function, epsilon=epsilon)
         values_interp = interp(vert)
 
