@@ -61,6 +61,7 @@ from bluemesh2d.pipeline import (  # noqa: E402,F401
     _warn_if_mesh_too_big,
     _warn_if_ram_risk,
     _write_ugrid_netcdf,
+    apply_nc_metadata,
     boundary_lines_from_points,
     build_hfun_constant_raster,
     build_hfun_raster,

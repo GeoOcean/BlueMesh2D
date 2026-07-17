@@ -10,7 +10,28 @@ _UGRID_FILL = -999
 _WGS84_FILL = -2147483647
 
 
-def _write_ugrid_netcdf(ugrid: dict, path: str, crs=None):
+def apply_nc_metadata(nc_path, metadata):
+    """Overwrite/add global attributes of an existing NetCDF file.
+
+    Parameters
+    ----------
+    nc_path : str
+        Path to the NetCDF file (modified in place).
+    metadata : dict or None
+        Global attributes to set, e.g. ``{"institution": "...", "title":
+        "..."}``. Existing attributes with the same name are overwritten;
+        others are left untouched. ``None`` or empty is a no-op.
+    """
+    if not metadata:
+        return
+    from netCDF4 import Dataset
+
+    with Dataset(nc_path, "a") as nc:
+        for key, value in metadata.items():
+            setattr(nc, str(key), str(value))
+
+
+def _write_ugrid_netcdf(ugrid: dict, path: str, crs=None, metadata=None):
     """Write a ``build_ugrid_arrays`` dict as a Delft3D-FM-style UGRID NetCDF.
 
     Mirrors ``grd_util._xr_dataset_from_ugrid_dict`` (variables, attributes,
@@ -26,6 +47,10 @@ def _write_ugrid_netcdf(ugrid: dict, path: str, crs=None):
         Controls the coordinate metadata: geographic (default) writes degree
         units and a ``wgs84`` grid mapping; a projected CRS writes metre
         units and a ``projected_coordinate_system`` grid mapping.
+    metadata : dict or None, optional
+        Extra/override global attributes; when ``None`` (default) the
+        standard attributes are written unchanged, otherwise each given
+        key overwrites (or adds to) them.
     """
     import numpy as np
     from datetime import datetime
@@ -159,10 +184,13 @@ def _write_ugrid_netcdf(ugrid: dict, path: str, crs=None):
         nc.source = f"BlueMesh2D QGIS plugin {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         nc.history = "Created with BlueMesh2D"
         nc.Conventions = "CF-1.8 UGRID-1.0 Deltares-0.10"
+        if metadata:
+            for key, value in metadata.items():
+                setattr(nc, str(key), str(value))
 
 
 def export_ugrid(vert, tria, raster_path, utm_crs, output_path,
-                 interp_order=3, feedback=None):
+                 interp_order=3, metadata=None, feedback=None):
     """Sample bathymetry onto the mesh nodes and write the UGRID NetCDF.
 
     `vert` is in `utm_crs`; nodes are reprojected to the bathymetry raster's
@@ -183,6 +211,9 @@ def export_ugrid(vert, tria, raster_path, utm_crs, output_path,
     interp_order : int, optional
         Interpolation order passed to ``interpolate_from_tiff``
         (0=nearest, 1=bilinear, 3=bicubic). Default is 3.
+    metadata : dict or None, optional
+        Global-attribute overrides for the written NetCDF (see
+        :func:`_write_ugrid_netcdf`). ``None`` keeps the defaults.
     feedback : object or None, optional
         Feedback sink, see :func:`extract_water_polygon`.
 
@@ -214,7 +245,7 @@ def export_ugrid(vert, tria, raster_path, utm_crs, output_path,
     feedback.pushInfo(f"Writing UGRID NetCDF -> {output_path}")
     ugrid = build_ugrid_arrays(np.column_stack((vert_geo, z)),
                                np.asarray(tria, dtype=int))
-    _write_ugrid_netcdf(ugrid, output_path, crs=raster_crs)
+    _write_ugrid_netcdf(ugrid, output_path, crs=raster_crs, metadata=metadata)
     return output_path
 
 
