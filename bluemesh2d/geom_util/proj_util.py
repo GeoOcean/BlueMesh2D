@@ -159,6 +159,46 @@ def reproject_geometry(geom, crs_from, crs_to):
     return transform(transformer.transform, geom).buffer(0)
 
 
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def bundled_raster_data_env():
+    """Point rasterio's bundled GDAL/PROJ at their own data files.
+
+    Hosts like QGIS export ``GDAL_DATA``/``PROJ_LIB`` for *their* libraries;
+    a pip rasterio wheel (which bundles its own GDAL and PROJ) would then
+    read foreign -- usually newer -- data files and fail with obscure errors
+    (``proj.db DATABASE.LAYOUT`` mismatches and the like). This context uses
+    rasterio's own configuration channels only (``rasterio.Env`` and its
+    private PROJ search path), so the process environment -- and therefore
+    the host's pyproj/PROJ -- is never touched. A no-op when rasterio is not
+    a wheel (Linux system packages have no bundled data dirs).
+    """
+    import os
+
+    try:
+        import rasterio
+        base = os.path.dirname(rasterio.__file__)
+    except Exception:
+        yield
+        return
+
+    gdal_data = os.path.join(base, "gdal_data")
+    proj_data = os.path.join(base, "proj_data")
+    if os.path.isdir(proj_data):
+        try:  # binds rasterio's own PROJ (only) to its own database
+            from rasterio._env import set_proj_data_search_path
+            set_proj_data_search_path(proj_data)
+        except Exception:
+            pass
+    if os.path.isdir(gdal_data):
+        with rasterio.Env(GDAL_DATA=gdal_data):
+            yield
+        return
+    yield
+
+
 def _raster_crs(src):
     """Build a pyproj CRS from an open rasterio dataset, robustly.
 

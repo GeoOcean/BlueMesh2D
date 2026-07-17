@@ -25,7 +25,9 @@ def check_dependencies():
     # NOTE: keep this list in sync with REQUIRED in the QGIS plugin's
     # deps_installer.py (kept separate on purpose: the installer must load
     # even when this package is broken or missing).
-    for mod in ("numpy", "scipy", "shapely", "rasterio", "pyproj",
+    # pyproj deliberately BEFORE rasterio: importing a pip rasterio wheel
+    # first loads its own libproj and breaks pyproj afterwards.
+    for mod in ("numpy", "scipy", "pyproj", "shapely", "rasterio",
                 "matplotlib", "contourpy", "netCDF4"):
         try:
             __import__(mod)

@@ -17,6 +17,16 @@ Support: ``bluemesh2d.feedback`` (progress/cancel), ``bluemesh2d.dependencies``.
 """
 from __future__ import annotations
 
+# pyproj must load before any pip rasterio wheel loads its own libproj
+# (mixing the order breaks pyproj: "TypeError: expected bytes, str found").
+try:
+    import pyproj  # noqa: F401
+    # pyproj loads libproj lazily at the first CRS creation; force it now,
+    # before any rasterio wheel loads its own copy
+    pyproj.CRS.from_epsg(4326)
+except Exception:
+    pass
+
 from dataclasses import dataclass
 
 from .dependencies import (  # noqa: F401
@@ -40,8 +50,10 @@ from .geom_util.boundary_util import (  # noqa: F401
 )
 from .geom_util.proj_util import _raster_crs  # noqa: F401
 from .geomesh_util.water_polygon import (  # noqa: F401
+    _corner_vertices,
     _flag_fixed_vertices,
     _prune_nonoriginal_fixed,
+    _valid_parts,
     extract_water_polygon,
 )
 from .hfun_util.build_hfun import (  # noqa: F401

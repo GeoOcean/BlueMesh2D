@@ -57,8 +57,10 @@ from qgis.core import (
 from .pipeline import (
     MeshCanceled,
     MeshConfig,
+    _corner_vertices,
     _flag_fixed_vertices,
     _prune_nonoriginal_fixed,
+    _valid_parts,
     boundary_lines_from_points,
     build_hfun_constant_raster,
     build_hfun_raster,
@@ -180,7 +182,16 @@ def _source_to_shapely(source, target_crs=None, densify=None):
         if xform is not None:
             g = QgsGeometry(g)
             g.transform(xform)
-        geoms.append(_shapely_from_qgis(g))
+        sg = _shapely_from_qgis(g)
+        if not sg.is_valid:
+            # make_valid keeps Z (fixed-vertex flags) on surviving vertices;
+            # buffer(0) is the 2D-only fallback
+            try:
+                from shapely.validation import make_valid
+                sg = make_valid(sg)
+            except Exception:
+                sg = sg.buffer(0)
+        geoms.append(sg)
     if not geoms:
         return None
     return unary_union(geoms)
@@ -278,6 +289,21 @@ class _BaseAlg(QgsProcessingAlgorithm):
     def icon(self):
         return plugin_icon()
 
+    @staticmethod
+    def _accept_invalid_geometries(context):
+        """Deliver input features even when QGIS flags them invalid.
+
+        The Z-flagged water polygon (stage 1) can be reported invalid by
+        QGIS's strict check; the pipeline repairs geometries itself
+        (``_valid_parts`` / ``_source_to_shapely``), so refusing the feature
+        up front only breaks the workflow.
+        """
+        try:
+            from qgis.core import QgsFeatureRequest
+            context.setInvalidGeometryCheck(QgsFeatureRequest.GeometryNoCheck)
+        except Exception:
+            pass
+
     def flags(self):
         # Force execution on the MAIN thread. Processing runs algorithms on a
         # background QThread by default, but pyproj / PROJ can hard-crash
@@ -371,8 +397,9 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
             [QgsProcessing.TypeVectorPolygon], optional=True))
         self.addParameter(QgsProcessingParameterBoolean(
             self.FIX_EXTENT_VERTS,
-            "Fix polygon vertices on the extent boundary (kept exactly by "
-            "stage 3 resampling)", defaultValue=True))
+            "Fix polygon vertices on the domain boundary (extent polygon or "
+            "buffered raster extent; kept exactly by stage 3 resampling)",
+            defaultValue=True))
         _num(self, self.DOMAIN_BUFFER,
              "Domain buffer factor (negative shrinks; ignored if an extent "
              "polygon is set)", -0.05, -10, 10)
@@ -384,6 +411,7 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         fb = _FeedbackAdapter(feedback)
         raster = self.parameterAsRasterLayer(parameters, self.RASTER, context)
 
@@ -407,25 +435,31 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
                 fb.pushWarning("Extent layer has no usable geometry; using the raster extent.")
 
         try:
-            poly, utm_crs, raster_crs = extract_water_polygon(
+            poly, utm_crs, raster_crs, domain_u = extract_water_polygon(
                 raster.source(),
                 self.parameterAsDouble(parameters, self.COAST_ZMAX, context),
                 self.parameterAsDouble(parameters, self.DOMAIN_BUFFER, context),
                 deep_zmax=deep_zmax,
                 extent_geom=extent_geom,
                 keep_largest=self.parameterAsBool(parameters, self.KEEP_LARGEST, context),
+                return_domain=True,
                 feedback=fb)
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Extraction failed: {exc}")
 
         # Deliver the layer in the raster's CRS (a CRS QGIS resolves natively);
         # the metric local-UTM CRS stays internal to the pipeline.
         from bluemesh2d.geom_util.proj_util import reproject_geometry
 
-        fix_verts = (extent_geom is not None and self.parameterAsBool(
-            parameters, self.FIX_EXTENT_VERTS, context))
+        # fixed vertices work with or without an extent polygon: the clip
+        # domain (extent polygon, or raster extent grown/shrunk by the
+        # domain buffer) is where the cut and the coastline junctions lie
+        fix_verts = self.parameterAsBool(
+            parameters, self.FIX_EXTENT_VERTS, context)
 
         fields = QgsFields()
         fields.append(QgsField("id", QVariant.Int))
@@ -437,40 +471,49 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
 
         if fix_verts:
             # Flag in the working (UTM) CRS, where the clip was computed: the
-            # cut vertices AND the two coast/extent intersection points lie
-            # exactly on this boundary there, so a small metric tolerance
-            # catches them all before any reprojection noise.
-            ext_utm = (extent_geom if utm_crs == raster_crs else
-                       reproject_geometry(extent_geom, raster_crs, utm_crs))
-            ext_boundary = ext_utm.boundary
+            # cut vertices AND the coast/domain intersection points lie
+            # exactly on the clip domain's boundary there, so a small metric
+            # tolerance catches them all before any reprojection noise.
+            ext_boundary = domain_u.boundary
             tol = 1e-3  # metres
 
-            # original extent vertices in the working CRS
             import numpy as np
-            import pyproj as _pyproj
-            _geoms = (extent_orig.geoms if hasattr(extent_orig, "geoms")
-                      else [extent_orig])
-            _pts = []
-            for _g in _geoms:
-                _pts += [(c[0], c[1]) for c in _g.exterior.coords[:-1]]
-                for _r in _g.interiors:
-                    _pts += [(c[0], c[1]) for c in _r.coords[:-1]]
-            orig_xy = np.asarray(_pts, dtype=float)
-            if utm_crs != raster_crs and orig_xy.size:
-                _tr = _pyproj.Transformer.from_crs(raster_crs, utm_crs,
-                                                   always_xy=True)
-                _x, _y = _tr.transform(orig_xy[:, 0], orig_xy[:, 1])
-                orig_xy = np.column_stack([_x, _y])
+            if extent_geom is not None:
+                # original extent vertices in the working CRS: these stay
+                # fixed in the output (plus the coastline junctions)
+                import pyproj as _pyproj
+                _geoms = (extent_orig.geoms if hasattr(extent_orig, "geoms")
+                          else [extent_orig])
+                _pts = []
+                for _g in _geoms:
+                    _pts += [(c[0], c[1]) for c in _g.exterior.coords[:-1]]
+                    for _r in _g.interiors:
+                        _pts += [(c[0], c[1]) for c in _r.coords[:-1]]
+                orig_xy = np.asarray(_pts, dtype=float)
+                if utm_crs != raster_crs and orig_xy.size:
+                    _tr = _pyproj.Transformer.from_crs(raster_crs, utm_crs,
+                                                       always_xy=True)
+                    _x, _y = _tr.transform(orig_xy[:, 0], orig_xy[:, 1])
+                    orig_xy = np.column_stack([_x, _y])
+            else:
+                # generated domain (buffered raster extent): fix its
+                # geometric corners plus the coastline intersection points
+                orig_xy = _corner_vertices(domain_u)
 
         parts = list(poly.geoms) if hasattr(poly, "geoms") else [poly]
+        # repair invalid parts (self-touching rings from the clip) BEFORE
+        # attaching Z flags: downstream stages reject invalid geometries
+        parts = _valid_parts(parts)
         n_fixed = 0
         for i, p in enumerate(parts):
             area_km2 = p.area / 1e6  # metric area, computed in UTM
             if fix_verts:
                 p = _flag_fixed_vertices(p, ext_boundary, tol)
-                # keep only original extent vertices + the run endpoints
-                # (coastline junctions); drop densification points
-                p = _prune_nonoriginal_fixed(p, orig_xy)
+                # extent polygon: keep original vertices + junctions, drop
+                # densification points. Generated (buffered) domain: keep
+                # the cut geometry but leave only the junctions fixed.
+                p = _prune_nonoriginal_fixed(
+                    p, orig_xy, unflag_only=(extent_geom is None))
                 n_fixed += sum(int(c[2] > 0.5) for c in p.exterior.coords[:-1])
                 # plain per-vertex transform: keeps ring order and Z flags
                 p = _reproject_polygon_keep_z(p, utm_crs, raster_crs)
@@ -481,7 +524,7 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
             f.setAttributes([i, area_km2])
             sink.addFeature(f)
         if fix_verts:
-            fb.pushInfo(f"Fixed vertices on the extent boundary: {n_fixed} "
+            fb.pushInfo(f"Fixed vertices on the domain boundary: {n_fixed} "
                         "(stored as Z=1; kept exactly by stage 3). Edit the "
                         "flags with the Vertex Tool's Vertex Editor panel "
                         "(Z column: 1 = fixed, 0 = free).")
@@ -570,6 +613,7 @@ class _BuildHfunBase(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         fb = _FeedbackAdapter(feedback)
         raster = self.parameterAsRasterLayer(parameters, self.RASTER, context)
         out_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
@@ -615,6 +659,8 @@ class _BuildHfunBase(_BaseAlg):
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"hfun raster failed: {exc}")
         self._dest = out_path
         return {self.OUTPUT: out_path}
@@ -798,6 +844,7 @@ class BuildHfunConstantAlgorithm(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         import pyproj
         fb = _FeedbackAdapter(feedback)
         out_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
@@ -829,6 +876,8 @@ class BuildHfunConstantAlgorithm(_BaseAlg):
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"hfun raster failed: {exc}")
         self._dest = out_path
         return {self.OUTPUT: out_path}
@@ -878,6 +927,7 @@ class ResampleBoundaryAlgorithm(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         import pyproj
         fb = _FeedbackAdapter(feedback)
         source = self.parameterAsSource(parameters, self.WATER, context)
@@ -907,6 +957,8 @@ class ResampleBoundaryAlgorithm(_BaseAlg):
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Boundary resampling failed: {exc}")
 
         # One continuous closed line per boundary ring (exterior / hole), so
@@ -1055,6 +1107,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         _check_smood_deps(self.parameterAsBool(parameters, self.DO_SMOOD, context))
         import pyproj
         fb = _FeedbackAdapter(feedback)
@@ -1115,6 +1168,8 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
         except QgsProcessingException:
             raise
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Mesh generation failed: {exc}")
 
         fb.pushInfo(f"Done: {len(vert)} nodes, {len(tria)} faces.")
@@ -1369,6 +1424,7 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         fb = _FeedbackAdapter(feedback)
         layer = self.parameterAsMeshLayer(parameters, self.MESH, context)
         src_path = _mesh_source_path(layer)
@@ -1382,6 +1438,8 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Boundary classification failed: {exc}")
 
         fields = QgsFields()
@@ -1451,6 +1509,7 @@ class ExportUgridAlgorithm(_ExportBase):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         import os
         import shutil
         fb = _FeedbackAdapter(feedback)
@@ -1464,6 +1523,8 @@ class ExportUgridAlgorithm(_ExportBase):
                 shutil.copyfile(src_path, out_path)
             fb.pushInfo(f"UGRID NetCDF -> {out_path}")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Export failed: {exc}")
         return {self.OUTPUT: out_path}
 
@@ -1502,6 +1563,7 @@ class ExportUgridBoundaryAlgorithm(_ExportBase):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         import os
         fb = _FeedbackAdapter(feedback)
 
@@ -1533,6 +1595,8 @@ class ExportUgridBoundaryAlgorithm(_ExportBase):
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Export failed: {exc}")
         return {self.OUTPUT: out_path}
 
@@ -1570,6 +1634,7 @@ class ExportGrdAlgorithm(_ExportBase):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         fb = _FeedbackAdapter(feedback)
 
         layer = self.parameterAsMeshLayer(parameters, self.MESH, context)
@@ -1589,6 +1654,8 @@ class ExportGrdAlgorithm(_ExportBase):
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f".grd export failed: {exc}")
         return {self.OUTPUT: out_path}
 
@@ -1675,6 +1742,7 @@ class GenerateMeshAlgorithm(_BaseAlg):
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
+        self._accept_invalid_geometries(context)
         _check_smood_deps(self.parameterAsBool(parameters, self.DO_SMOOD, context))
         fb = _FeedbackAdapter(feedback)
         raster_layer = self.parameterAsRasterLayer(parameters, self.RASTER, context)
@@ -1717,6 +1785,8 @@ class GenerateMeshAlgorithm(_BaseAlg):
         except QgsProcessingException:
             raise
         except Exception as exc:
+            import traceback
+            fb.pushInfo(traceback.format_exc())
             raise QgsProcessingException(f"Mesh generation failed: {exc}")
 
         fb.pushInfo(f"Done: {result.n_nodes} nodes, {result.n_triangles} triangles.")
@@ -1794,5 +1864,7 @@ ALL_ALGORITHMS = (
     ExportUgridAlgorithm,
     ExportUgridBoundaryAlgorithm,
     ExportGrdAlgorithm,
-    GenerateMeshAlgorithm,
+    # GenerateMeshAlgorithm ("all steps") intentionally not registered:
+    # the step-by-step workflow is the supported path (the class and the
+    # bluemesh2d.pipeline.generate_mesh facade remain for Python scripting)
 )
