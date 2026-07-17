@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 from ..feedback import _NullFeedback, _check, _warn_if_ram_risk
-from ..geom_util.proj_util import _raster_crs
+from ..geom_util.proj_util import _raster_crs, bundled_raster_data_env
 
 
 def _flag_fixed_vertices(p, ext_boundary, tol):
@@ -42,14 +42,68 @@ def _flag_fixed_vertices(p, ext_boundary, tol):
                    [ring3(r.coords) for r in p.interiors])
 
 
-def _prune_nonoriginal_fixed(p, keep_xy, tol=1e-3):
-    """Remove fixed (Z=1) vertices that are neither run endpoints nor listed.
+def _corner_vertices(geom, min_deviation_deg=30.0):
+    """Vertices of a polygon outline where the direction turns sharply.
+
+    Used for the generated (buffered raster extent) clip domain, which has
+    no user-drawn vertices: its geometric corners -- where the boundary
+    direction deviates by at least ``min_deviation_deg`` -- play the role
+    the extent polygon's original vertices play, and are kept fixed.
+    """
+    import numpy as np
+
+    corners = []
+    polys = geom.geoms if hasattr(geom, "geoms") else [geom]
+    for p in polys:
+        if p.geom_type != "Polygon":
+            continue
+        for ring in [p.exterior] + list(p.interiors):
+            pts = np.asarray(ring.coords, dtype=float)[:, :2]
+            if len(pts) > 1 and np.allclose(pts[0], pts[-1]):
+                pts = pts[:-1]
+            if len(pts) < 3:
+                continue
+            prev = np.roll(pts, 1, axis=0)
+            nxt = np.roll(pts, -1, axis=0)
+            a1 = np.arctan2(*(pts - prev).T[::-1])
+            a2 = np.arctan2(*(nxt - pts).T[::-1])
+            dev = np.abs((a2 - a1 + np.pi) % (2.0 * np.pi) - np.pi)
+            corners.extend(pts[dev >= np.radians(min_deviation_deg)])
+    return np.asarray(corners, dtype=float).reshape(-1, 2)
+
+
+def _valid_parts(parts):
+    """Repair invalid polygon parts (2D) and flatten any multi results.
+
+    The raw ``coast ∩ domain`` intersection can be invalid (self-touching
+    rings); it must be repaired BEFORE the Z flags are attached, because the
+    usual repair (``buffer(0)``) drops Z coordinates.
+    """
+    out = []
+    for p in parts:
+        if not p.is_valid:
+            p = p.buffer(0)
+        if p.geom_type == "Polygon":
+            if not p.is_empty:
+                out.append(p)
+        elif hasattr(p, "geoms"):
+            out.extend(g for g in p.geoms
+                       if g.geom_type == "Polygon" and not g.is_empty)
+    return out
+
+
+def _prune_nonoriginal_fixed(p, keep_xy, tol=1e-3, unflag_only=False):
+    """Demote fixed (Z=1) vertices that are neither run endpoints nor listed.
 
     ``keep_xy`` holds the extent polygon's *original* vertex coordinates
-    (working CRS). Fixed vertices introduced only to follow the reprojected
-    outline (densification points) are deleted from the ring, so the output
-    keeps just the original extent vertices plus the two coastline-junction
-    points of each fixed run. Free (Z=0) vertices are never touched.
+    (working CRS). With ``unflag_only=False`` (extent-polygon case) the other
+    fixed vertices -- densification points sitting on straight extent edges
+    -- are deleted from the ring; the output keeps just the original extent
+    vertices plus the coastline-junction points of each fixed run. With
+    ``unflag_only=True`` (generated/buffered domain, whose shape lives in
+    those vertices) they are kept geometrically but set free (Z=0), so only
+    the coastline junctions stay fixed. Free (Z=0) vertices are never
+    touched.
     """
     import numpy as np
     from shapely.geometry import Polygon
@@ -72,7 +126,10 @@ def _prune_nonoriginal_fixed(p, keep_xy, tol=1e-3):
                 d2 = np.sum((keep_xy - core[i, :2]) ** 2, axis=1)
                 if d2.min() <= tol * tol:
                     continue  # original extent vertex, kept
-            keep[i] = False
+            if unflag_only:
+                core[i, 2] = 0.0
+            else:
+                keep[i] = False
         core = core[keep]
         out = [tuple(c) for c in core]
         if closed and out:
@@ -85,7 +142,7 @@ def _prune_nonoriginal_fixed(p, keep_xy, tol=1e-3):
 
 def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
                           deep_zmax=None, extent_geom=None, keep_largest=True,
-                          feedback=None):
+                          return_domain=False, feedback=None):
     """Extract the water domain from a raster.
 
     The water region is ``z <= coast_zmax``; if `deep_zmax` is given (an
@@ -116,6 +173,11 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
         clipped to it before contour extraction. Default is ``None``.
     keep_largest : bool, optional
         If ``True`` (default), keep only the single largest water polygon.
+    return_domain : bool, optional
+        If ``True``, also return the domain polygon actually used for the
+        clip (the extent polygon, or the buffered raster extent), in the
+        working CRS -- exactly the geometry the water polygon's cut lies on,
+        e.g. for flagging fixed vertices. Default is ``False``.
     feedback : object or None, optional
         Feedback sink exposing ``pushInfo``/``isCanceled`` (see
         :class:`_NullFeedback`); a no-op sink is used if ``None``.
@@ -129,6 +191,8 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
         projected (e.g. UTM); otherwise a local UTM CRS.
     raster_crs : pyproj.CRS
         CRS of the input raster.
+    domain_u : shapely geometry, only when ``return_domain=True``
+        Clip domain in the working CRS.
     """
     feedback = feedback or _NullFeedback()
     import numpy as np
@@ -141,7 +205,7 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
     from bluemesh2d.geom_util.getiso import getiso_polygon
 
     feedback.pushInfo("Reading raster ...")
-    with rasterio.open(raster_path) as src:
+    with bundled_raster_data_env(), rasterio.open(raster_path) as src:
         # the raster is read whole and the contour extraction works on
         # float copies: budget ~4x the in-memory band size
         band_bytes = src.width * src.height * np.dtype(src.dtypes[0]).itemsize
@@ -209,10 +273,12 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
     feedback.setProgress(85)
 
     if utm_crs == raster_crs:  # projected input: work natively in the tif CRS
-        poly = coast.intersection(domain)
+        domain_u = domain
+        poly = coast.intersection(domain_u)
     else:
+        domain_u = reproject_geometry(domain, raster_crs, utm_crs)
         poly = reproject_geometry(coast, raster_crs, utm_crs).intersection(
-            reproject_geometry(domain, raster_crs, utm_crs))
+            domain_u)
     if poly.is_empty:
         raise RuntimeError(
             "No water polygon found: the coastline/domain intersection is empty. "
@@ -230,6 +296,8 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
         poly = max(parts, key=lambda g: g.area)
         feedback.pushInfo(
             f"Keeping only the largest region ({poly.area / 1e6:.0f} km2).")
+    if return_domain:
+        return poly, utm_crs, raster_crs, domain_u
     return poly, utm_crs, raster_crs
 
 

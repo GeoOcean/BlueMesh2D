@@ -56,8 +56,7 @@ bathymetry.tif
 ## The algorithms (Processing Toolbox ▸ BlueMesh2D)
 
 The pipeline is available **split into four stages** — each result lands in an
-ordinary (temporary or saved) QGIS layer you can inspect before the next step —
-plus an all-in-one:
+ordinary (temporary or saved) QGIS layer you can inspect before the next step:
 
 | algorithm | inputs | outputs |
 |---|---|---|
@@ -67,7 +66,6 @@ plus an all-in-one:
 | **4 – Generate mesh from boundary** | **edges layer (3) — editable: move/delete/add segments first**, hfun raster (2), bathy raster; kind = delaunay/delfront; smooth; optional **smood** (+ *merge small links*, only if triangle-only smood can't remove the last small flow links) | UGRID NetCDF → mesh layer |
 | **5 – Generate boundary conditions** | mesh layer (4); depth threshold (default 20 m) | one **line layer** with a `btype` attribute — **open** / **closed** / **island** — styled by type with visible vertex dots, **editable** (move vertices, or change `btype` to reclassify a segment) |
 | **6 – Export** *(folder)* — **6a** plain UGRID, **6b** UGRID + open BC, **6c** ADCIRC `.grd` | **6a** (default): mesh layer (4) only → `.nc`, no boundary files, no boundary layer needed. **6b**: mesh (4) **+ boundary conditions (5, required)** → `.nc` and, from the `open` features, `Boundary01.pli` / `Riemann.bc` / `FlowFM_bnd.ext`. **6c**: mesh (4) + boundary conditions (5, required) → `.grd` with open/land loops (`open`→open, `closed`+`island`→land), snapping each boundary vertex back to the nearest mesh node so stage-5 edits are honoured | `.nc` / `.nc` + Delft3D-FM BC / `.grd` |
-| **Generate mesh from bathymetry (all steps)** | stages 1–4 in one dialog | UGRID NetCDF → mesh layer |
 
 Stage 4 rebuilds the PSLG from the (possibly edited) boundary lines, so you can
 reshape the domain before meshing; likewise stage 6 rebuilds the boundary
@@ -77,10 +75,10 @@ chain in the **Graphical Modeler**.
 
 Every step is its own numbered folder under **BlueMesh2D** (`1 - Extract water
 polygon`, `2 - Build element-size raster (hfun)` with 2a/2b/2c inside, `3 -
-Resample boundary...`, ..., `6 - Export` with 6a/6b/6c inside, `7 - All steps`).
+Resample boundary...`, ..., `6 - Export` with 6a/6b/6c inside).
 QGIS's Processing toolbox sorts grouped and ungrouped algorithms in two
 separate buckets rather than one merged alphabetical list, so giving every
-step its own group is what keeps them in numeric order 1→7 instead of the
+step its own group is what keeps them in numeric order 1→6 instead of the
 folders (2, 6) drifting away from the single algorithms.
 
 **CRS handling**: vector layers are always delivered in the input tif's CRS.
@@ -98,8 +96,8 @@ reprojection at all — and the output NetCDF carries metre units with a
    - **macOS**: `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/`
 2. Restart QGIS → **Plugins ▸ Manage and Install Plugins ▸ Installed** → enable
    **BlueMesh2D**.
-3. The algorithm appears in the **Processing Toolbox** under
-   *BlueMesh2D ▸ Generate mesh from bathymetry (all steps)*.
+3. The algorithms appear in the **Processing Toolbox** under
+   *BlueMesh2D ▸ 1 - Extract water polygon* (and the following stages).
 
 ### Python dependencies (important)
 

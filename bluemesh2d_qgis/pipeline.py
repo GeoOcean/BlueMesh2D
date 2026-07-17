@@ -21,6 +21,19 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
+# pyproj must load BEFORE any pip rasterio wheel brings its own copy of
+# libproj into the process: the reverse order makes pyproj misbehave with
+# "TypeError: expected bytes, str found" (see the pyproj FAQ on mixing
+# PROJ versions). Harmless when pyproj is missing -- the dependency dialog
+# handles that case.
+try:
+    import pyproj  # noqa: E402
+    # importing is not enough: pyproj loads libproj lazily at the first CRS
+    # creation, so force it NOW, before rasterio's copy enters the process
+    pyproj.CRS.from_epsg(4326)
+except Exception:
+    pass
+
 import matplotlib  # noqa: E402
 matplotlib.use("Agg", force=True)  # must precede any bluemesh2d import (getiso)
 
@@ -37,12 +50,14 @@ from bluemesh2d.pipeline import (  # noqa: E402,F401
     _boundary_loops,
     _check,
     _compile_custom_hfun,
+    _corner_vertices,
     _fixed_part_from_z,
     _flag_fixed_vertices,
     _locate_fixed,
     _make_depth_hfun,
     _prune_nonoriginal_fixed,
     _raster_crs,
+    _valid_parts,
     _warn_if_mesh_too_big,
     _warn_if_ram_risk,
     _write_ugrid_netcdf,

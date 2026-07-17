@@ -96,7 +96,9 @@ def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear")
 
     _check_method(method)
 
-    dataset = rasterio.open(tiff_path)
+    from bluemesh2d.geom_util.proj_util import bundled_raster_data_env
+    with bundled_raster_data_env():
+        dataset = rasterio.open(tiff_path)
     band = dataset.read(1)
     nodata = dataset.nodata
     transform = dataset.transform

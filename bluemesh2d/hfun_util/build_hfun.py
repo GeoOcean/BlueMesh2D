@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 from ..feedback import _NullFeedback, _check, _warn_if_ram_risk
-from ..geom_util.proj_util import _raster_crs
+from ..geom_util.proj_util import _raster_crs, bundled_raster_data_env
 
 
 def _compile_custom_hfun(code):
@@ -257,7 +257,7 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     from bluemesh2d.geomesh_util.depth_field import depth_field_from_tif
     from bluemesh2d.hfun_util.smooth_and_precomput import smooth_precomput_hfun
 
-    with rasterio.open(raster_path) as src:
+    with bundled_raster_data_env(), rasterio.open(raster_path) as src:
         raster_crs = _raster_crs(src)
         w, h = src.width, src.height
         lon = (src.transform * (np.arange(w), np.zeros(w)))[0]
@@ -351,7 +351,7 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
 
     transform = from_origin(xs[0] - cell_size / 2, ys[0] + cell_size / 2,
                             cell_size, cell_size)
-    with rasterio.open(
+    with bundled_raster_data_env(), rasterio.open(
         out_path, "w", driver="GTiff", height=H.shape[0], width=H.shape[1],
         count=1, dtype="float32", crs=utm_crs.to_wkt(), transform=transform,
         compress="deflate",
@@ -493,7 +493,7 @@ def build_hfun_constant_raster(water_geom, out_path, h_domain,
 
     transform = from_origin(xs[0] - cell_size / 2, ys[0] + cell_size / 2,
                             cell_size, cell_size)
-    with rasterio.open(
+    with bundled_raster_data_env(), rasterio.open(
         out_path, "w", driver="GTiff", height=H.shape[0], width=H.shape[1],
         count=1, dtype="float32", crs=utm_crs.to_wkt(), transform=transform,
         compress="deflate",
@@ -523,7 +523,7 @@ def load_hfun_raster(hfun_path):
     import rasterio
     from scipy.interpolate import RegularGridInterpolator
 
-    with rasterio.open(hfun_path) as src:
+    with bundled_raster_data_env(), rasterio.open(hfun_path) as src:
         H = src.read(1).astype(float)
         t = src.transform
         xs = t.c + t.a * (np.arange(src.width) + 0.5)

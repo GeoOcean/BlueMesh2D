@@ -105,7 +105,8 @@ def interpolate_from_tiff(
     z : ndarray of shape (N,)
         Interpolated raster values at mesh nodes (negated).
     """
-    with rasterio.open(tiff_path) as src:
+    from bluemesh2d.geom_util.proj_util import bundled_raster_data_env
+    with bundled_raster_data_env(), rasterio.open(tiff_path) as src:
         band = src.read(1).astype(np.float64)
         transform = src.transform
         raster_crs = src.crs
