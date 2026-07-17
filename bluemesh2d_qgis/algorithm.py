@@ -61,6 +61,7 @@ from .pipeline import (
     _flag_fixed_vertices,
     _prune_nonoriginal_fixed,
     _valid_parts,
+    apply_nc_metadata,
     boundary_lines_from_points,
     build_hfun_constant_raster,
     build_hfun_raster,
@@ -126,6 +127,27 @@ def _num(alg, name, label, default, minv=-1e9, maxv=1e9, integer=False,
     if advanced:
         p.setFlags(p.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
     alg.addParameter(p)
+
+
+def _parse_metadata(text):
+    """Parse the optional metadata text field into a dict.
+
+    One ``key = value`` per line; empty lines and ``#`` comments are
+    ignored. Returns ``None`` when nothing usable is given, so the NetCDF
+    keeps its default global attributes.
+    """
+    if not text or not text.strip():
+        return None
+    meta = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            meta[key] = value.strip()
+    return meta or None
 
 
 def _shapely_from_qgis(g):
@@ -1036,6 +1058,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
     HFUN = "HFUN"
     RASTER = "RASTER"
     FIXED_POINTS = "FIXED_POINTS"
+    METADATA = "METADATA"
     KIND = "KIND"
     DO_SMOOTH = "DO_SMOOTH"
     DO_SMOOD = "DO_SMOOD"
@@ -1102,6 +1125,14 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterEnum(
             self.INTERP_ORDER, "Bathymetry interpolation",
             options=self._INTERP_OPTS, defaultValue=2))
+        meta = QgsProcessingParameterString(
+            self.METADATA,
+            "NetCDF metadata (optional; one 'key = value' per line, "
+            "overwrites the default global attributes, e.g. institution, "
+            "source, history, title)",
+            multiLine=True, optional=True)
+        meta.setFlags(meta.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(meta)
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT, "4 - Output mesh (UGRID NetCDF)", fileFilter="NetCDF (*.nc)"))
 
@@ -1162,7 +1193,10 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
                 feedback=fb)
             interp_idx = self.parameterAsEnum(parameters, self.INTERP_ORDER, context)
             export_ugrid(vert, tria, bathy.source(), utm_crs, out_path,
-                         self._INTERP_VALS[interp_idx], fb)
+                         self._INTERP_VALS[interp_idx],
+                         metadata=_parse_metadata(self.parameterAsString(
+                             parameters, self.METADATA, context)),
+                         feedback=fb)
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
         except QgsProcessingException:
@@ -1484,6 +1518,7 @@ class _ExportBase(_BaseAlg):
 
 class ExportUgridAlgorithm(_ExportBase):
     MESH = "MESH"
+    METADATA = "METADATA"
     OUTPUT = "OUTPUT"
 
     def name(self):
@@ -1504,6 +1539,12 @@ class ExportUgridAlgorithm(_ExportBase):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterMeshLayer(
             self.MESH, "Mesh layer (from stage 4)"))
+        self.addParameter(QgsProcessingParameterString(
+            self.METADATA,
+            "NetCDF metadata (optional; one 'key = value' per line, "
+            "overwrites the global attributes, e.g. institution, source, "
+            "history, title)",
+            multiLine=True, optional=True))
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT, "Output mesh (UGRID NetCDF)", fileFilter="NetCDF (*.nc)"))
 
@@ -1517,10 +1558,15 @@ class ExportUgridAlgorithm(_ExportBase):
         layer = self.parameterAsMeshLayer(parameters, self.MESH, context)
         src_path = _mesh_source_path(layer)
         out_path = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
+        meta = _parse_metadata(self.parameterAsString(
+            parameters, self.METADATA, context))
 
         try:
             if os.path.abspath(src_path) != os.path.abspath(out_path):
                 shutil.copyfile(src_path, out_path)
+            if meta:
+                apply_nc_metadata(out_path, meta)
+                fb.pushInfo("Metadata overridden: " + ", ".join(meta))
             fb.pushInfo(f"UGRID NetCDF -> {out_path}")
         except Exception as exc:
             import traceback

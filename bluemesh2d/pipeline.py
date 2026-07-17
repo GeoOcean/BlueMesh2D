@@ -80,6 +80,7 @@ from .mesh_file.ugrid import (  # noqa: F401
     _UGRID_FILL,
     _WGS84_FILL,
     _write_ugrid_netcdf,
+    apply_nc_metadata,
     export_ugrid,
     read_ugrid_mesh,
 )
@@ -265,7 +266,7 @@ def generate_mesh(config: MeshConfig, feedback=None) -> MeshResult:
 
     feedback.setProgress(88)
     export_ugrid(vert, tria, config.raster_path, utm_crs,
-                 config.output_path, config.interp_order, feedback)
+                 config.output_path, config.interp_order, feedback=feedback)
     feedback.setProgress(100)
 
     return MeshResult(
