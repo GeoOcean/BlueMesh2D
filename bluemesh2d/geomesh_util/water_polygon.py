@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 
-from ..feedback import _NullFeedback, _check, _warn_if_ram_risk
+from ..feedback import (
+    _NullFeedback,
+    _available_ram_bytes,
+    _check,
+    _warn_if_ram_risk,
+)
 from ..geom_util.proj_util import _raster_crs, bundled_raster_data_env
 
 
@@ -140,9 +145,85 @@ def _prune_nonoriginal_fixed(p, keep_xy, tol=1e-3, unflag_only=False):
                    [ring3(r.coords) for r in p.interiors])
 
 
+def _contour_read_budget():
+    """Max grid cells to read for contouring, sized to available RAM.
+
+    Contour extraction works on float copies (~4x the band), so the peak is
+    ~16 bytes/cell; keep it under ~15% of available RAM, with a hard ceiling
+    so contourpy stays responsive and a floor so small machines still work.
+    """
+    avail = _available_ram_bytes() or 4_000_000_000
+    return int(min(120_000_000, max(4_000_000, 0.15 * avail / 16.0)))
+
+
+def _read_band_for_contour(src, bbox, max_cells):
+    """Read band 1 clipped to ``bbox`` and decimated to fit ``max_cells``.
+
+    Only the requested window is read (never the full raster), and it is
+    down-sampled on read when still too large -- so an arbitrarily large
+    bathymetry raster is contoured without materialising it in memory.
+
+    Parameters
+    ----------
+    src : rasterio dataset
+    bbox : tuple or None
+        ``(xmin, ymin, xmax, ymax)`` in the raster CRS, or ``None`` for the
+        whole raster.
+    max_cells : int
+        Upper bound on the number of cells actually read.
+
+    Returns
+    -------
+    zdat : ndarray (rows, cols)
+    lon, lat : ndarray
+        Pixel x/y coordinates of the columns/rows (raster CRS).
+    step : int
+        Decimation factor applied (1 = full resolution of the window).
+    clipped : bool
+        Whether a bbox window was used.
+    """
+    import numpy as np
+    from rasterio.transform import Affine
+    from rasterio.windows import Window
+
+    W, H = src.width, src.height
+    if bbox is not None:
+        xmin, ymin, xmax, ymax = bbox
+        inv = ~src.transform
+        cols, rows = [], []
+        for x in (xmin, xmax):
+            for y in (ymin, ymax):
+                c, r = inv * (x, y)
+                cols.append(c)
+                rows.append(r)
+        col_off = max(0, int(np.floor(min(cols))) - 2)
+        row_off = max(0, int(np.floor(min(rows))) - 2)
+        col_end = min(W, int(np.ceil(max(cols))) + 2)
+        row_end = min(H, int(np.ceil(max(rows))) + 2)
+        if col_end <= col_off or row_end <= row_off:
+            raise RuntimeError("The extent polygon does not overlap the raster.")
+    else:
+        col_off, row_off, col_end, row_end = 0, 0, W, H
+
+    win = Window(col_off, row_off, col_end - col_off, row_end - row_off)
+    win_w, win_h = int(win.width), int(win.height)
+    step = 1
+    if win_w * win_h > max_cells:
+        step = int(np.ceil((win_w * win_h / float(max_cells)) ** 0.5))
+    out_w = max(1, win_w // step)
+    out_h = max(1, win_h // step)
+
+    zdat = src.read(1, window=win, out_shape=(out_h, out_w))
+    t = src.window_transform(win) * Affine.scale(win_w / out_w, win_h / out_h)
+    lon = (t * (np.arange(out_w), np.zeros(out_w)))[0]
+    lat = (t * (np.zeros(out_h), np.arange(out_h)))[1]
+    return zdat, lon, lat, step, (bbox is not None)
+
+
 def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
                           deep_zmax=None, extent_geom=None, keep_largest=True,
-                          return_domain=False, feedback=None):
+                          return_domain=False, invert_z=False,
+                          nodata_value=None, feedback=None):
     """Extract the water domain from a raster.
 
     The water region is ``z <= coast_zmax``; if `deep_zmax` is given (an
@@ -178,6 +259,13 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
         clip (the extent polygon, or the buffered raster extent), in the
         working CRS -- exactly the geometry the water polygon's cut lies on,
         e.g. for flagging fixed vertices. Default is ``False``.
+    invert_z : bool, optional
+        Treat the raster as depth (positive down) by flipping its sign before
+        the coastline logic. Default ``False`` (elevation, positive up).
+    nodata_value : float or None, optional
+        Elevation (positive up) assigned to nodata / non-finite pixels.
+        ``None`` (default) treats them as deep water so the sea (stored as
+        nodata) is always included regardless of ``coast_zmax``.
     feedback : object or None, optional
         Feedback sink exposing ``pushInfo``/``isCanceled`` (see
         :class:`_NullFeedback`); a no-op sink is used if ``None``.
@@ -205,44 +293,47 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
     from bluemesh2d.geom_util.getiso import getiso_polygon
 
     feedback.pushInfo("Reading raster ...")
+    # Read only the study window and decimate on read when the raster is too
+    # large, so an oversized bathymetry raster is clipped BEFORE (and while)
+    # reading -- never materialised in full.
+    max_cells = _contour_read_budget()
     with bundled_raster_data_env(), rasterio.open(raster_path) as src:
-        # the raster is read whole and the contour extraction works on
-        # float copies: budget ~4x the in-memory band size
-        band_bytes = src.width * src.height * np.dtype(src.dtypes[0]).itemsize
-        _warn_if_ram_risk(
-            feedback, 4 * band_bytes,
-            f"Reading and contouring this raster ({src.width} x {src.height} px)",
-            hint="Clip the raster to the study area first (e.g. with GDAL "
-                 "'Clip raster by extent'), or provide a smaller domain "
-                 "extent polygon.")
-        zdat = src.read(1)
         raster_crs = _raster_crs(src)
-        w, h = src.width, src.height
-        lon = (src.transform * (np.arange(w), np.zeros(w)))[0]
-        lat = (src.transform * (np.zeros(h), np.arange(h)))[1]
+        nodata = src.nodata
+        bbox = tuple(extent_geom.bounds) if extent_geom is not None else None
+        zdat, lon, lat, step, clipped = _read_band_for_contour(
+            src, bbox, max_cells)
     _check(feedback)
-    feedback.setProgress(15)
 
-    if extent_geom is not None:
-        # clip the raster to the extent's bbox BEFORE contour extraction: the
-        # contours are traced on far fewer pixels, and the polygon is clipped
-        # exactly by the extent afterwards.
-        exmin, eymin, exmax, eymax = extent_geom.bounds
-        pad_x = 2.0 * abs(lon[1] - lon[0])
-        pad_y = 2.0 * abs(lat[1] - lat[0])
-        ix = np.flatnonzero((lon >= exmin - pad_x) & (lon <= exmax + pad_x))
-        iy = np.flatnonzero((lat >= eymin - pad_y) & (lat <= eymax + pad_y))
-        if ix.size < 2 or iy.size < 2:
-            raise RuntimeError("The extent polygon does not overlap the raster.")
-        lon = lon[ix[0]:ix[-1] + 1]
-        lat = lat[iy[0]:iy[-1] + 1]
-        zdat = zdat[iy[0]:iy[-1] + 1, ix[0]:ix[-1] + 1]
+    # optional Z reversal so the coastline logic (water = z <= coast_zmax)
+    # sees elevation positive up
+    zdat = np.asarray(zdat, dtype=float)
+    bad = ~np.isfinite(zdat)
+    if nodata is not None:
+        bad |= (zdat == nodata)
+    if invert_z:
+        zdat = -zdat
+    if bad.any():
+        # nodata pixels default to (deep) water, so they stay below the
+        # coastline level whatever its sign -- the usual raster convention
+        # where the sea is stored as nodata. A user-set ``nodata_value`` (an
+        # elevation, positive up) overrides this.
+        zdat[bad] = -1.0e30 if nodata_value is None else float(nodata_value)
+
+    if clipped:
         feedback.pushInfo(
-            f"Raster clipped to the extent polygon: {zdat.shape[0]} x "
-            f"{zdat.shape[1]} px")
+            f"Raster clipped to the extent polygon: {zdat.shape[1]} x "
+            f"{zdat.shape[0]} px")
         if domain_buffer:
             feedback.pushInfo(
                 "Domain buffer is ignored when an extent polygon is provided.")
+    if step > 1:
+        feedback.pushInfo(
+            f"Raster too large to read at full resolution; contouring at "
+            f"1/{step} resolution ({zdat.shape[1]} x {zdat.shape[0]} px). "
+            "Provide a (smaller) extent polygon for a full-resolution "
+            "coastline.")
+    feedback.setProgress(15)
 
     utm_crs = get_local_utm_crs(raster_crs, lon, lat)
 

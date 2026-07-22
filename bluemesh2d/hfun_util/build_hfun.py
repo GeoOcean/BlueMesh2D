@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 
-from ..feedback import _NullFeedback, _check, _warn_if_ram_risk
+from ..feedback import (
+    _NullFeedback,
+    _available_ram_bytes,
+    _check,
+    _warn_if_ram_risk,
+)
 from ..geom_util.proj_util import _raster_crs, bundled_raster_data_env
 
 
@@ -159,6 +164,9 @@ def _make_depth_hfun(depth_field, method="polynomial",
         lo = np.full(xy.shape[0], hmin, dtype=float)
         if detail_mask is not None:
             lo[detail_mask(xy)] = detail_hmin
+        # safety net: a non-finite size (e.g. a NaN leaking from raster
+        # nodata) must never reach the output -> fall back to the cap
+        values = np.where(np.isfinite(values), values, hmax)
         return np.clip(values, lo, hmax)
 
     if hasattr(depth_field, "bounds"):
@@ -175,7 +183,8 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
                       domain_geom=None,
                       slope_ncells=None, slope_step=None, slope_hmin=None,
                       max_gradient=0.1, cell_size=None,
-                      extent_buffer=None, feedback=None):
+                      extent_buffer=None, invert_z=False, nodata_value=None,
+                      feedback=None):
     """Build the gradient-limited element-size field and save it as a GeoTIFF.
 
     `domain_geom` (e.g. the stage-1 water polygon) restricts hfun computation
@@ -264,12 +273,38 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
         lat = (src.transform * (np.zeros(h), np.arange(h)))[1]
     utm_crs = get_local_utm_crs(raster_crs, lon, lat)
 
-    feedback.pushInfo(f"Building depth-based size function ({method}) ...")
-    depth_field = depth_field_from_tif(raster_path, output_crs=utm_crs)
-
     def _to_utm(geom):
         return geom if utm_crs == raster_crs else \
             reproject_geometry(geom, raster_crs, utm_crs)
+
+    # Read only the sampling window of the bathymetry (domain extent + the
+    # gradient-limiting margin), decimated when huge, so an oversized raster
+    # is never read in full. Without a domain, the whole raster is read but
+    # still decimated to a RAM-based cell budget.
+    avail = _available_ram_bytes() or 4_000_000_000
+    max_cells = int(min(120_000_000, max(4_000_000, 0.15 * avail / 16.0)))
+    raster_bbox = None
+    if domain_geom is not None:
+        dxmin, dymin, dxmax, dymax = _to_utm(domain_geom).bounds
+        ddw, ddh = dxmax - dxmin, dymax - dymin
+        cs = cell_size if cell_size is not None \
+            else max(max(ddw, ddh) / 1200.0, hmin / 2.0)
+        if extent_buffer is None or extent_buffer < 0:
+            mg = min((hmax - hmin) / max_gradient, 0.25 * max(ddw, ddh))
+        else:
+            mg = float(extent_buffer)
+        sbox = (dxmin - mg, dymin - mg, dxmax + mg, dymax + mg)
+        if utm_crs == raster_crs:
+            raster_bbox = sbox
+        else:
+            from rasterio.warp import transform_bounds as _tb
+            raster_bbox = _tb(utm_crs, raster_crs, *sbox)
+
+    feedback.pushInfo(f"Building depth-based size function ({method}) ...")
+    depth_field = depth_field_from_tif(raster_path, output_crs=utm_crs,
+                                       bbox=raster_bbox, max_cells=max_cells,
+                                       invert_z=invert_z,
+                                       nodata_value=nodata_value)
 
     detail_u = _to_utm(detail_geom) if detail_geom is not None else None
 

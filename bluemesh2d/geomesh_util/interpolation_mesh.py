@@ -79,9 +79,14 @@ def interpolate_from_xyz(
 
 
 def interpolate_from_tiff(
-    tiff_path, vert, input_crs=None, order=3, mode="constant", cval=np.nan
+    tiff_path, vert, input_crs=None, order=3, mode="constant", cval=np.nan,
+    invert_z=False, nodata_value=None, max_cells=None
 ):
     """Interpolate GeoTIFF raster values at mesh node coordinates.
+
+    Only the window covering the mesh nodes is read (decimated when very
+    large), so an oversized bathymetry raster is sampled without being read
+    in full.
 
     Parameters
     ----------
@@ -99,69 +104,93 @@ def interpolate_from_tiff(
     cval : float, optional
         Fill value outside the domain when ``mode='constant'``. Default is
         ``np.nan``.
+    invert_z : bool, optional
+        By default the raster stores elevation (positive up) and node values
+        are depth ``-value``. Set ``True`` for a depth-positive-down raster,
+        giving ``+value``. Default ``False``.
+    nodata_value : float or None, optional
+        Elevation (positive up) assigned to nodata / non-finite pixels.
+        ``None`` (default) fills them from the nearest valid pixel.
+    max_cells : int or None, optional
+        Decimate the read window above this many cells. ``None`` sizes it to
+        available RAM.
 
     Returns
     -------
     z : ndarray of shape (N,)
-        Interpolated raster values at mesh nodes (negated).
+        Node values: depth (``-elevation``), or ``+value`` if ``invert_z``.
     """
+    from bluemesh2d.feedback import _available_ram_bytes
     from bluemesh2d.geom_util.proj_util import bundled_raster_data_env
+    from bluemesh2d.geomesh_util.depth_field import _read_window_decimated
+
+    if max_cells is None:
+        avail = _available_ram_bytes() or 4_000_000_000
+        max_cells = int(min(120_000_000, max(4_000_000, 0.15 * avail / 16.0)))
+    sign = 1.0 if invert_z else -1.0
+
     with bundled_raster_data_env(), rasterio.open(tiff_path) as src:
-        band = src.read(1).astype(np.float64)
-        transform = src.transform
         raster_crs = src.crs
         nodata = src.nodata
 
-        if nodata is not None:
-            band = np.where(band == nodata, np.nan, band)
-        else:
-            band = np.where(~np.isfinite(band), np.nan, band)
-
-        if np.isnan(band).any():
-            mask = np.isnan(band)
-            _, indices = distance_transform_edt(mask, return_indices=True)
-            band_filled = band[tuple(indices)]
-        else:
-            band_filled = band
-
-        if (
-            input_crs is not None
-            and pyproj.CRS.from_user_input(input_crs) != raster_crs
-        ):
+        # node coordinates in the raster CRS, and the window that covers them
+        if (input_crs is not None
+                and pyproj.CRS.from_user_input(input_crs) != raster_crs):
             transformer = pyproj.Transformer.from_crs(
-                input_crs, raster_crs, always_xy=True
-            ).transform
+                input_crs, raster_crs, always_xy=True).transform
             xs, ys = transformer(vert[:, 0], vert[:, 1])
         else:
-            xs, ys = vert[:, 0], vert[:, 1]
+            xs, ys = np.asarray(vert[:, 0]), np.asarray(vert[:, 1])
+        bbox = (float(np.min(xs)), float(np.min(ys)),
+                float(np.max(xs)), float(np.max(ys)))
+        band, transform, _ = _read_window_decimated(src, bbox, max_cells)
+        band = band.astype(np.float64)
 
-        inv_transform = ~transform
-        cols, rows = inv_transform * (xs, ys)
+    if nodata is not None:
+        band = np.where(band == nodata, np.nan, band)
+    else:
+        band = np.where(~np.isfinite(band), np.nan, band)
 
-        mask_inside = (
-            (cols >= 0) & (cols < band.shape[1]) &
-            (rows >= 0) & (rows < band.shape[0])
+    if np.isnan(band).any():
+        if nodata_value is None:
+            mask = np.isnan(band)
+            if mask.all():
+                band = np.zeros_like(band)  # nothing valid to fill from
+            else:
+                _, indices = distance_transform_edt(mask, return_indices=True)
+                band = band[tuple(indices)]
+        else:
+            band = np.where(np.isnan(band), float(nodata_value), band)
+    band_filled = band
+
+    inv_transform = ~transform
+    cols, rows = inv_transform * (xs, ys)
+
+    mask_inside = (
+        (cols >= 0) & (cols < band.shape[1]) &
+        (rows >= 0) & (rows < band.shape[0])
+    )
+
+    z = np.full_like(np.asarray(xs, dtype=float), np.nan, dtype=float)
+
+    if np.any(mask_inside):
+        z[mask_inside] = sign * map_coordinates(
+            band_filled,
+            [rows[mask_inside], cols[mask_inside]],
+            order=order,
+            mode=mode,
+            cval=cval,
+            prefilter=False,
         )
 
-        z = np.full_like(xs, np.nan, dtype=float)
+    if np.any(~mask_inside):
+        rows_clip = np.clip(rows, 0, band.shape[0] - 1)
+        cols_clip = np.clip(cols, 0, band.shape[1] - 1)
+        z[~mask_inside] = sign * band_filled[
+            rows_clip[~mask_inside].astype(int),
+            cols_clip[~mask_inside].astype(int)]
 
-        if np.any(mask_inside):
-            z[mask_inside] = -map_coordinates(
-                band_filled,
-                [rows[mask_inside], cols[mask_inside]],
-                order=order,
-                mode=mode,
-                cval=cval,
-                prefilter=False,
-            )
-
-        if np.any(~mask_inside):
-            rows_clip = np.clip(rows, 0, band.shape[0] - 1)
-            cols_clip = np.clip(cols, 0, band.shape[1] - 1)
-            z[~mask_inside] = -band_filled[rows_clip[~mask_inside].astype(int),
-                                          cols_clip[~mask_inside].astype(int)]
-
-        return z
+    return z
 
 
 def interpolate_from_xr(
