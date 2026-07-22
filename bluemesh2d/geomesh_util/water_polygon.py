@@ -216,11 +216,13 @@ def _read_band_for_contour(src, bbox, max_cells):
     zdat = src.read(1, window=win, out_shape=(out_h, out_w))
     t = src.window_transform(win) * Affine.scale(win_w / out_w, win_h / out_h)
     # rasterio transforms are corner-referenced (t*(0,0) = top-left corner of
-    # the first cell), but each cell value represents the cell CENTRE and the
-    # contouring places zdat[i,j] AT (lon[j], lat[i]); sample cell centres
-    # (index + 0.5) so the extracted coastline isn't shifted half a cell.
-    lon = (t * (np.arange(out_w) + 0.5, np.zeros(out_w)))[0]
-    lat = (t * (np.zeros(out_h), np.arange(out_h) + 0.5))[1]
+    # the first cell), but the contouring places zdat[i,j] AT (lon[j], lat[i]).
+    # For Area rasters the value is the cell CENTRE, so offset by half a cell
+    # (Point rasters: offset 0) to avoid shifting the extracted coastline.
+    from bluemesh2d.geomesh_util.depth_field import _cell_center_offset
+    off = _cell_center_offset(src)
+    lon = (t * (np.arange(out_w) + off, np.zeros(out_w)))[0]
+    lat = (t * (np.zeros(out_h), np.arange(out_h) + off))[1]
     return zdat, lon, lat, step, (bbox is not None)
 
 
@@ -302,6 +304,8 @@ def extract_water_polygon(raster_path, coast_zmax=2.0, domain_buffer=-0.05,
     # reading -- never materialised in full.
     max_cells = _contour_read_budget()
     with bundled_raster_data_env(), rasterio.open(raster_path) as src:
+        from bluemesh2d.geom_util.proj_util import require_georeferenced
+        require_georeferenced(src)
         raster_crs = _raster_crs(src)
         nodata = src.nodata
         bbox = tuple(extent_geom.bounds) if extent_geom is not None else None

@@ -199,6 +199,27 @@ def bundled_raster_data_env():
     yield
 
 
+def require_georeferenced(dataset, what="bathymetry raster"):
+    """Raise a clear error when a raster has no CRS or no geotransform.
+
+    Without these the pipeline can't place the coastline / mesh in the world:
+    a missing CRS otherwise crashes deep in a PROJ call, and a missing
+    geotransform (rasterio substitutes the identity affine) would silently
+    produce geometry in pixel coordinates. Fail early with an actionable
+    message instead.
+    """
+    if dataset.crs is None:
+        raise ValueError(
+            f"The {what} has no coordinate reference system (CRS). Assign one "
+            "(in QGIS: right-click the layer -> Properties -> Source -> Set "
+            "CRS, or `gdal_edit.py -a_srs EPSG:xxxx file.tif`) before meshing.")
+    if dataset.transform.is_identity:
+        raise ValueError(
+            f"The {what} is not georeferenced: it has no geotransform, so map "
+            "and pixel coordinates are the same. Georeference it (assign a "
+            "geotransform or a world file) before meshing.")
+
+
 def _raster_crs(src):
     """Build a pyproj CRS from an open rasterio dataset, robustly.
 
