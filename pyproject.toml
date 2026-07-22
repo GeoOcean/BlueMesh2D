@@ -57,3 +57,8 @@ local_scheme = "no-local-version"
 
 [tool.setuptools.packages.find]
 exclude = ["assets", "assets.*"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
