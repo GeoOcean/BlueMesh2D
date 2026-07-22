@@ -220,8 +220,11 @@ def depth_field_from_tif(tiff_path, output_crs, raster_crs=None, method="linear"
         else:
             # method == "linear": continuous (col, row) from inverse transform
             col_row = np.column_stack(inv_transform * (xs, ys))
-            # RegularGridInterpolator expects (row, col) for array [rows, cols]
-            row_col = col_row[:, [1, 0]]
+            # RegularGridInterpolator expects (row, col) for array [rows, cols];
+            # subtract 0.5 because the transform is corner-referenced while the
+            # grid values sit at cell centres (index k) -- avoids a half-cell
+            # shift in the sampled depth.
+            row_col = col_row[:, [1, 0]] - 0.5
             depth = interp(row_col)
         # queries outside the read window return NaN; treat as depth 0 so the
         # size function never produces nodata

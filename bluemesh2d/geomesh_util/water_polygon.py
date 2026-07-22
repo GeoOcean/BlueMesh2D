@@ -215,8 +215,12 @@ def _read_band_for_contour(src, bbox, max_cells):
 
     zdat = src.read(1, window=win, out_shape=(out_h, out_w))
     t = src.window_transform(win) * Affine.scale(win_w / out_w, win_h / out_h)
-    lon = (t * (np.arange(out_w), np.zeros(out_w)))[0]
-    lat = (t * (np.zeros(out_h), np.arange(out_h)))[1]
+    # rasterio transforms are corner-referenced (t*(0,0) = top-left corner of
+    # the first cell), but each cell value represents the cell CENTRE and the
+    # contouring places zdat[i,j] AT (lon[j], lat[i]); sample cell centres
+    # (index + 0.5) so the extracted coastline isn't shifted half a cell.
+    lon = (t * (np.arange(out_w) + 0.5, np.zeros(out_w)))[0]
+    lat = (t * (np.zeros(out_h), np.arange(out_h) + 0.5))[1]
     return zdat, lon, lat, step, (bbox is not None)
 
 

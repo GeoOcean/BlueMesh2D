@@ -165,6 +165,12 @@ def interpolate_from_tiff(
 
     inv_transform = ~transform
     cols, rows = inv_transform * (xs, ys)
+    # the transform is corner-referenced (index k -> corner), but band[i, j]
+    # is the cell CENTRE value; sample at centres so nodes take the depth of
+    # the cell they sit in (no half-cell shift). Rim points falling outside
+    # the centre grid are handled by the nearest-fill branch below.
+    cols = cols - 0.5
+    rows = rows - 0.5
 
     mask_inside = (
         (cols >= 0) & (cols < band.shape[1]) &

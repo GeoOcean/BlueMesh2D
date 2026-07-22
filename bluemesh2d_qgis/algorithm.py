@@ -39,11 +39,13 @@ from qgis.core import (
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
+    QgsProcessingFeatureBasedAlgorithm,
     QgsProcessingParameterBoolean,
     QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterDefinition,
+    QgsProcessingParameterExtent,
     QgsProcessingParameterFileDestination,
     QgsProcessingParameterMeshLayer,
     QgsProcessingParameterNumber,
@@ -573,6 +575,163 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         if getattr(self, "_show_verts", False):
             _style_water_polygon(getattr(self, "_dest", None), context, feedback)
         return {self.OUTPUT: getattr(self, "_dest", None)}
+
+
+class SetFixedInAreaAlgorithm(QgsProcessingFeatureBasedAlgorithm):
+    """Set the fixed/free flag (Z) of water-polygon vertices inside an area.
+
+    Feature-based so it supports QGIS in-place editing: with the water polygon
+    selected and in edit mode, 'Edit Features In-Place' modifies that layer
+    directly instead of producing a copy. Run normally, it outputs a flagged
+    copy as before.
+    """
+    AREA = "AREA"
+    EXTENT = "EXTENT"
+    VALUE = "VALUE"
+
+    _VALUES = ("Fixed (Z = 1)", "Free (Z = 0)")
+
+    def group(self):
+        return "1 - Extract water polygon"
+
+    def groupId(self):
+        return "extract_water_polygon"
+
+    def name(self):
+        return "set_fixed_in_area"
+
+    def displayName(self):
+        return "1b - Set fixed / free vertices in area"
+
+    def shortHelpString(self):
+        return ("Bulk-set the fixed/free flag on the water polygon (stage 1) "
+                "for every boundary vertex that falls inside an area, instead "
+                "of editing vertices one by one. Define the area either by "
+                "drawing a rectangle directly on the map ('Area drawn on the "
+                "map' -> the ... button -> Draw on Canvas) or with a polygon "
+                "layer (draw a scratch polygon, or select features in a "
+                "polygon layer and tick 'Selected features only'). Choose "
+                "whether vertices inside become Fixed (Z = 1, kept exactly by "
+                "stage 3) or Free (Z = 0, resampled). Vertices outside keep "
+                "their current flag.\n\n"
+                "To overwrite the water polygon in place instead of making a "
+                "copy: select it in the Layers panel, toggle editing on, then "
+                "run this from Processing's 'Edit Features In-Place' mode (the "
+                "pencil button at the top of the Toolbox). Otherwise it writes "
+                "a new flagged polygon; either way, feed the result to "
+                "'3 - Resample boundary'.")
+
+    def createInstance(self):
+        return SetFixedInAreaAlgorithm()
+
+    def outputName(self):
+        return "Water polygon (flagged)"
+
+    def inputLayerTypes(self):
+        return [QgsProcessing.TypeVectorPolygon]
+
+    def sourceFlags(self):
+        # water polygons can be invalid (self-touching rings from the clip);
+        # don't let Processing skip them on a validity check
+        from qgis.core import QgsProcessingFeatureSource
+        return QgsProcessingFeatureSource.FlagSkipGeometryValidityChecks
+
+    def supportInPlaceEdit(self, layer):
+        # in-place must not change the geometry type, so the layer must
+        # already carry Z (as the stage-1 output does when fixing vertices)
+        try:
+            return (layer.geometryType() == QgsWkbTypes.PolygonGeometry
+                    and QgsWkbTypes.hasZ(layer.wkbType()))
+        except Exception:
+            return False
+
+    def outputWkbType(self, input_wkb):
+        # ensure the (copy) output carries Z so the flags survive
+        return QgsWkbTypes.addZ(input_wkb)
+
+    def initParameters(self, config=None):
+        self.addParameter(QgsProcessingParameterExtent(
+            self.EXTENT, "Area drawn on the map (rectangle; optional)",
+            optional=True))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.AREA, "Area polygon layer (optional; use 'Selected features "
+            "only' for a map selection)",
+            [QgsProcessing.TypeVectorPolygon], optional=True))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.VALUE, "Set vertices inside the area to",
+            options=self._VALUES, defaultValue=0))
+
+    def prepareAlgorithm(self, parameters, context, feedback):
+        _require_deps()
+        from shapely.ops import unary_union
+        from shapely.prepared import prep
+
+        self._z_set = 1.0 if self.parameterAsEnum(
+            parameters, self.VALUE, context) == 0 else 0.0
+        source = self.parameterAsSource(
+            parameters, self.inputParameterName(), context)
+        crs = source.sourceCrs()
+
+        # area mask, in the water-polygon CRS: polygon layer and/or the
+        # rectangle drawn on the map (combined if both are given)
+        areas = []
+        area_src = self.parameterAsSource(parameters, self.AREA, context)
+        if area_src is not None:
+            a = _source_to_shapely(area_src, crs)
+            if a is not None:
+                areas.append(a)
+        if parameters.get(self.EXTENT) is not None:
+            rect = self.parameterAsExtentGeometry(
+                parameters, self.EXTENT, context, crs)
+            if rect is not None and not rect.isEmpty():
+                areas.append(_shapely_from_qgis(rect))
+        if not areas:
+            feedback.reportError(
+                "Define an area: draw a rectangle on the map, or pass a "
+                "polygon layer (optionally 'Selected features only').")
+            return False
+
+        self._mask = prep(unary_union(areas))
+        self._n_changed = 0
+        return True
+
+    def processFeature(self, feature, context, feedback):
+        from shapely.geometry import MultiPolygon, Point, Polygon
+
+        g = feature.geometry()
+        if g is None or g.isEmpty():
+            return [feature]
+
+        def ring_z(coords):
+            out = []
+            for c in coords:
+                x, y = c[0], c[1]
+                z = c[2] if len(c) > 2 else 0.0
+                if self._mask.intersects(Point(x, y)):
+                    z = self._z_set
+                    self._n_changed += 1
+                out.append((x, y, z))
+            return out
+
+        geom = _shapely_from_qgis(g)
+        parts = geom.geoms if hasattr(geom, "geoms") else [geom]
+        new_parts = []
+        for p in parts:
+            if p.geom_type != "Polygon":
+                continue
+            new_parts.append(Polygon(ring_z(p.exterior.coords),
+                                     [ring_z(r.coords) for r in p.interiors]))
+        if new_parts:
+            feature.setGeometry(QgsGeometry.fromWkt(MultiPolygon(new_parts).wkt))
+        return [feature]
+
+    def postProcessAlgorithm(self, context, feedback):
+        flag = "fixed (Z=1)" if getattr(self, "_z_set", 1.0) == 1.0 \
+            else "free (Z=0)"
+        feedback.pushInfo(
+            f"Vertices set {flag} inside the area: "
+            f"{getattr(self, '_n_changed', 0)}.")
+        return super().postProcessAlgorithm(context, feedback) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -1338,14 +1497,16 @@ def _boundary_lines_by_type(source, target_crs):
 def _style_water_polygon(dest, context, feedback):
     """Show the water polygon's vertices, colored by their fixed flag.
 
-    Adds two geometry-generator marker layers on top of the fill: red for
-    fixed vertices (Z=1, on the extent boundary) and green for free ones.
-    The markers read Z live, so edits in the Vertex Editor recolor at once.
+    Uses a rule-based renderer so the legend spells out the Z convention:
+    one row for the polygon fill, one for ``Z = 1`` (fixed) vertices in red,
+    one for ``Z = 0`` (free) vertices in green. Each vertex row is drawn by a
+    geometry-generator that reads Z live, so edits in the Vertex Editor
+    recolor at once.
     """
     try:
         from qgis.core import (
             QgsFillSymbol, QgsGeometryGeneratorSymbolLayer, QgsMarkerSymbol,
-            QgsProcessingUtils, QgsSingleSymbolRenderer,
+            QgsProcessingUtils, QgsRuleBasedRenderer,
         )
         try:
             from qgis.core import Qgis
@@ -1358,32 +1519,44 @@ def _style_water_polygon(dest, context, feedback):
         if layer is None:
             return
 
-        fill = QgsFillSymbol.createSimple(
-            {"color": "166,206,227,110", "outline_color": "31,120,180,255",
-             "outline_width": "0.35"})
-
         vertices = ("array_foreach(generate_series(1, num_points($geometry)), "
                     "point_n($geometry, @element))")
 
-        def gen(zfilter, color, outline):
+        def vertex_symbol(zfilter, color, outline):
+            """A fill symbol whose only layer draws markers at matching vertices."""
             glayer = QgsGeometryGeneratorSymbolLayer.create(
                 {"geometryModifier":
                  f"collect_geometries(array_filter({vertices}, {zfilter}))"})
             glayer.setSymbolType(marker_type)
             glayer.setSubSymbol(QgsMarkerSymbol.createSimple(
                 {"name": "circle", "color": color, "outline_color": outline,
-                 "outline_width": "0.2", "size": "1.6"}))
-            return glayer
+                 "outline_width": "0.2", "size": "1.8"}))
+            sym = QgsFillSymbol()
+            sym.changeSymbolLayer(0, glayer)  # replace the default fill layer
+            return sym
 
-        # free vertices (Z != 1, incl. missing Z) in green, fixed in red
-        fill.appendSymbolLayer(
-            gen("coalesce(z(@element), 0) <> 1",
-                "51,160,44,255", "20,90,20,255"))
-        fill.appendSymbolLayer(
-            gen("coalesce(z(@element), 0) = 1",
-                "227,26,28,255", "153,0,0,255"))
+        fill = QgsFillSymbol.createSimple(
+            {"color": "166,206,227,110", "outline_color": "31,120,180,255",
+             "outline_width": "0.35"})
 
-        layer.setRenderer(QgsSingleSymbolRenderer(fill))
+        # one rule per legend row; empty filter -> every rule renders for the
+        # (single) polygon feature, so all three swatches appear in the legend
+        root = QgsRuleBasedRenderer.Rule(None)
+        rows = [
+            (fill, "Water polygon"),
+            (vertex_symbol("coalesce(z(@element), 0) = 1",
+                           "227,26,28,255", "153,0,0,255"),
+             "Z = 1  (fixed vertex)"),
+            (vertex_symbol("coalesce(z(@element), 0) <> 1",
+                           "51,160,44,255", "20,90,20,255"),
+             "Z = 0  (free vertex)"),
+        ]
+        for sym, label in rows:
+            rule = QgsRuleBasedRenderer.Rule(sym)
+            rule.setLabel(label)
+            root.appendChild(rule)
+
+        layer.setRenderer(QgsRuleBasedRenderer(root))
         layer.triggerRepaint()
     except Exception as exc:
         feedback.pushInfo(f"Could not style water polygon: {exc}")
@@ -1956,6 +2129,7 @@ def _enable_native_mesh(layer, feedback):
 
 ALL_ALGORITHMS = (
     ExtractWaterPolygonAlgorithm,
+    SetFixedInAreaAlgorithm,
     BuildHfunPolynomialAlgorithm,
     BuildHfunWavelengthAlgorithm,
     BuildHfunCustomAlgorithm,
