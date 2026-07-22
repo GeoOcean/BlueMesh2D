@@ -190,7 +190,8 @@ def _write_ugrid_netcdf(ugrid: dict, path: str, crs=None, metadata=None):
 
 
 def export_ugrid(vert, tria, raster_path, utm_crs, output_path,
-                 interp_order=3, metadata=None, feedback=None):
+                 interp_order=3, metadata=None, invert_z=False,
+                 nodata_value=None, feedback=None):
     """Sample bathymetry onto the mesh nodes and write the UGRID NetCDF.
 
     `vert` is in `utm_crs`; nodes are reprojected to the bathymetry raster's
@@ -214,6 +215,12 @@ def export_ugrid(vert, tria, raster_path, utm_crs, output_path,
     metadata : dict or None, optional
         Global-attribute overrides for the written NetCDF (see
         :func:`_write_ugrid_netcdf`). ``None`` keeps the defaults.
+    invert_z : bool, optional
+        Reverse the raster Z sign when sampling node depths (see
+        :func:`interpolate_from_tiff`). Default ``False``.
+    nodata_value : float or None, optional
+        Elevation assigned to raster nodata when sampling node depths;
+        ``None`` fills from the nearest valid pixel. Default ``None``.
     feedback : object or None, optional
         Feedback sink, see :func:`extract_water_polygon`.
 
@@ -239,7 +246,8 @@ def export_ugrid(vert, tria, raster_path, utm_crs, output_path,
         vert_geo = vert  # projected input: mesh is already in the tif CRS
     else:
         vert_geo = reproject_node(vert, utm_crs, raster_crs)
-    z = interpolate_from_tiff(raster_path, vert_geo, order=interp_order)
+    z = interpolate_from_tiff(raster_path, vert_geo, order=interp_order,
+                              invert_z=invert_z, nodata_value=nodata_value)
     _check(feedback)
 
     feedback.pushInfo(f"Writing UGRID NetCDF -> {output_path}")

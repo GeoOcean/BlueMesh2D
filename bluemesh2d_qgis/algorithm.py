@@ -70,6 +70,7 @@ from .pipeline import (
     export_ugrid,
     extract_water_polygon,
     generate_boundary_condition_points,
+    generate_boundary_conditions,
     generate_mesh,
     load_hfun_raster,
     mesh_pslg,
@@ -374,6 +375,8 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
     FIX_EXTENT_VERTS = "FIX_EXTENT_VERTS"
     DOMAIN_BUFFER = "DOMAIN_BUFFER"
     KEEP_LARGEST = "KEEP_LARGEST"
+    INVERT_Z = "INVERT_Z"
+    NODATA_VALUE = "NODATA_VALUE"
     OUTPUT = "OUTPUT"
 
     def group(self):
@@ -428,6 +431,15 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterBoolean(
             self.KEEP_LARGEST, "Keep only the largest water region",
             defaultValue=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.INVERT_Z,
+            "Reverse Z axis (raster stores depth positive-down / inverted "
+            "elevation)", defaultValue=False))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.NODATA_VALUE,
+            "Replace nodata with this elevation (m; empty = treat as deep "
+            "water)", QgsProcessingParameterNumber.Double, optional=True,
+            minValue=-1e5, maxValue=1e5))
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.OUTPUT, "1 - Water polygon", QgsProcessing.TypeVectorPolygon))
 
@@ -465,6 +477,9 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
                 extent_geom=extent_geom,
                 keep_largest=self.parameterAsBool(parameters, self.KEEP_LARGEST, context),
                 return_domain=True,
+                invert_z=self.parameterAsBool(parameters, self.INVERT_Z, context),
+                nodata_value=(self.parameterAsDouble(parameters, self.NODATA_VALUE, context)
+                              if parameters.get(self.NODATA_VALUE) is not None else None),
                 feedback=fb)
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
@@ -582,6 +597,8 @@ class _BuildHfunBase(_BaseAlg):
     SLOPE_HMIN = "SLOPE_HMIN"
     MAX_GRADIENT = "MAX_GRADIENT"
     EXTENT_BUFFER = "EXTENT_BUFFER"
+    INVERT_Z = "INVERT_Z"
+    NODATA_VALUE = "NODATA_VALUE"
     OUTPUT = "OUTPUT"
 
     METHOD = None  # subclass: 'polynomial' | 'wavelength' | 'custom'
@@ -623,6 +640,15 @@ class _BuildHfunBase(_BaseAlg):
         _num(self, self.EXTENT_BUFFER,
              "Buffer around the computed area (m; -1 = automatic)",
              -1.0, -1.0, 1e7, advanced=True)
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.INVERT_Z,
+            "Reverse Z axis (raster stores depth positive-down / inverted "
+            "elevation)", defaultValue=False))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.NODATA_VALUE,
+            "Replace nodata with this elevation (m; empty = 0 / sea level)",
+            QgsProcessingParameterNumber.Double, optional=True,
+            minValue=-1e5, maxValue=1e5))
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.OUTPUT, "2 - Element-size raster (hfun)"))
 
@@ -676,6 +702,9 @@ class _BuildHfunBase(_BaseAlg):
                 slope_hmin=slope_hmin,
                 max_gradient=self.parameterAsDouble(parameters, self.MAX_GRADIENT, context),
                 extent_buffer=self.parameterAsDouble(parameters, self.EXTENT_BUFFER, context),
+                invert_z=self.parameterAsBool(parameters, self.INVERT_Z, context),
+                nodata_value=(self.parameterAsDouble(parameters, self.NODATA_VALUE, context)
+                              if parameters.get(self.NODATA_VALUE) is not None else None),
                 feedback=fb,
                 **self._method_kwargs(parameters, context))
         except MeshCanceled:
@@ -1064,6 +1093,8 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
     DO_SMOOD = "DO_SMOOD"
     SMOOD_MERGE = "SMOOD_MERGE"
     INTERP_ORDER = "INTERP_ORDER"
+    INVERT_Z = "INVERT_Z"
+    NODATA_VALUE = "NODATA_VALUE"
     OUTPUT = "OUTPUT"
 
     _KIND_OPTS = ["delaunay", "delfront"]
@@ -1125,6 +1156,16 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterEnum(
             self.INTERP_ORDER, "Bathymetry interpolation",
             options=self._INTERP_OPTS, defaultValue=2))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.INVERT_Z,
+            "Reverse Z axis when sampling node depths (depth positive-down "
+            "raster)", defaultValue=False))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.NODATA_VALUE,
+            "Replace nodata with this elevation when sampling depths (m; "
+            "empty = nearest valid pixel)",
+            QgsProcessingParameterNumber.Double, optional=True,
+            minValue=-1e5, maxValue=1e5))
         meta = QgsProcessingParameterString(
             self.METADATA,
             "NetCDF metadata (optional; one 'key = value' per line, "
@@ -1196,6 +1237,9 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
                          self._INTERP_VALS[interp_idx],
                          metadata=_parse_metadata(self.parameterAsString(
                              parameters, self.METADATA, context)),
+                         invert_z=self.parameterAsBool(parameters, self.INVERT_Z, context),
+                         nodata_value=(self.parameterAsDouble(parameters, self.NODATA_VALUE, context)
+                                       if parameters.get(self.NODATA_VALUE) is not None else None),
                          feedback=fb)
         except MeshCanceled:
             raise QgsProcessingException("Canceled by user.")
@@ -1378,7 +1422,12 @@ def _style_hfun_raster(dest, context, feedback):
 
 
 def _style_boundary_conditions(dest, context, feedback):
-    """Categorize the boundary-condition point layer by ``btype``."""
+    """Categorize the boundary-condition point layer by ``btype``.
+
+    One point per boundary node, coloured by type, with ``btype`` edited
+    through a drop-down (ValueMap) so each node's boundary type can be
+    changed individually.
+    """
     try:
         from qgis.core import (
             QgsCategorizedSymbolRenderer, QgsMarkerSymbol,
@@ -1392,13 +1441,13 @@ def _style_boundary_conditions(dest, context, feedback):
             return QgsMarkerSymbol.createSimple(
                 {"name": "circle", "color": color,
                  "outline_color": outline_color, "outline_width": "0.2",
-                 "size": "1.8"})
+                 "size": "2.0"})
 
         cats = [
             QgsRendererCategory("open", sym("227,26,28,255", "153,0,0,255"),
                                 "open boundary"),
             QgsRendererCategory("closed", sym("51,160,44,255", "20,90,20,255"),
-                                "closed boundary"),
+                                "closed (land) boundary"),
             QgsRendererCategory("island", sym("31,120,180,255", "10,60,110,255"),
                                 "island"),
         ]
@@ -1436,15 +1485,22 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
 
     def shortHelpString(self):
         return ("Classify each mesh (stage 4) boundary node into an editable "
-                "point feature: open boundary (offshore, depth above the "
-                "threshold), closed boundary (land on the outer boundary) and "
-                "islands (interior coastline loops). The output is one point "
-                "layer with a 'btype' attribute (open / closed / island), "
-                "colored by type. Select points on the map and change their "
-                "'btype' in the attribute table (drop-down list) to "
-                "reclassify them, then feed the layer to '6 - Export' -- the "
-                "export rebuilds continuous boundary lines from consecutive "
-                "points of the same type.")
+                "point: open boundary (offshore, depth above the threshold), "
+                "closed boundary (land on the outer boundary) and islands "
+                "(interior coastline loops). The output is one point layer "
+                "with a 'btype' attribute (open / closed / island), one "
+                "feature per boundary node, coloured by type. To reclassify a "
+                "node: select the layer, toggle editing (pencil), then change "
+                "its 'btype' with the drop-down -- either in the Attribute "
+                "Table, or by clicking the point with the Identify/feature "
+                "form. To change many points at once: select them on the map, "
+                "open the Attribute Table, switch it to Form view (multi-edit) "
+                "and pick the 'btype' from the drop-down, then Apply. (If you "
+                "instead use the attribute table's expression/update bar, "
+                "quote the value as a string -- 'closed', not closed -- "
+                "otherwise QGIS reads it as a field name.) Save edits, then "
+                "feed the layer to '6 - Export' (it rebuilds continuous lines "
+                "from consecutive points of the same type).")
 
     def createInstance(self):
         return GenerateBoundaryConditionsAlgorithm()

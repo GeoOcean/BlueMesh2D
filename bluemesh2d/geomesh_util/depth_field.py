@@ -72,7 +72,55 @@ def depth_field_from_dat(x, y, z, input_crs, output_crs, method="linear"):
     return depth_field
 
 
-def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear"):
+def _read_window_decimated(dataset, bbox, max_cells):
+    """Read band 1 clipped to ``bbox`` (raster CRS) and decimated to fit.
+
+    Only the requested window is read (never the whole raster), down-sampled
+    on read when still larger than ``max_cells`` -- so an oversized bathymetry
+    raster is turned into a depth field without materialising it in memory.
+
+    Returns ``(band, transform, step)`` where ``transform`` is the affine of
+    the decimated window (maps local col/row -> raster-CRS coordinates).
+    """
+    from rasterio.transform import Affine
+    from rasterio.windows import Window
+
+    W, H = dataset.width, dataset.height
+    if bbox is not None:
+        xmin, ymin, xmax, ymax = bbox
+        inv = ~dataset.transform
+        cols, rows = [], []
+        for x in (xmin, xmax):
+            for y in (ymin, ymax):
+                c, r = inv * (x, y)
+                cols.append(c)
+                rows.append(r)
+        col_off = max(0, int(np.floor(min(cols))) - 2)
+        row_off = max(0, int(np.floor(min(rows))) - 2)
+        col_end = min(W, int(np.ceil(max(cols))) + 2)
+        row_end = min(H, int(np.ceil(max(rows))) + 2)
+        if col_end <= col_off or row_end <= row_off:
+            raise RuntimeError(
+                "The domain does not overlap the bathymetry raster.")
+    else:
+        col_off, row_off, col_end, row_end = 0, 0, W, H
+
+    win = Window(col_off, row_off, col_end - col_off, row_end - row_off)
+    win_w, win_h = int(win.width), int(win.height)
+    step = 1
+    if max_cells and win_w * win_h > max_cells:
+        step = int(np.ceil((win_w * win_h / float(max_cells)) ** 0.5))
+    out_w = max(1, win_w // step)
+    out_h = max(1, win_h // step)
+
+    band = dataset.read(1, window=win, out_shape=(out_h, out_w))
+    t = dataset.window_transform(win) * Affine.scale(win_w / out_w, win_h / out_h)
+    return band, t, step
+
+
+def depth_field_from_tif(tiff_path, output_crs, raster_crs=None, method="linear",
+                         bbox=None, max_cells=None, invert_z=False,
+                         nodata_value=None):
     """Build a callable depth field from a bathymetry GeoTIFF.
 
     Parameters
@@ -86,6 +134,22 @@ def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear")
     method : {'linear', 'nearest'}, optional
         ``'linear'`` for bilinear interpolation; ``'nearest'`` for nearest pixel.
         Default is ``'linear'``.
+    bbox : tuple or None, optional
+        ``(xmin, ymin, xmax, ymax)`` in the *raster* CRS. When given, only that
+        window of the raster is read (much less memory on large rasters). The
+        depth field returns 0 outside it, so the window must cover the full
+        query extent. Default ``None`` (whole raster).
+    max_cells : int or None, optional
+        If the window still exceeds this many cells it is down-sampled on read.
+        Default ``None`` (no decimation).
+    invert_z : bool, optional
+        The raster is assumed to store elevation (positive up), so depth is
+        ``-value``. Set ``True`` when the raster already stores depth
+        (positive down) or has an inverted Z sign, giving depth ``+value``.
+        Default ``False``.
+    nodata_value : float or None, optional
+        Elevation (positive up) assigned to nodata / non-finite pixels.
+        ``None`` (default) uses 0 (sea level -> depth 0).
 
     Returns
     -------
@@ -97,13 +161,16 @@ def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear")
     _check_method(method)
 
     from bluemesh2d.geom_util.proj_util import bundled_raster_data_env
-    with bundled_raster_data_env():
-        dataset = rasterio.open(tiff_path)
-    band = dataset.read(1)
-    nodata = dataset.nodata
-    transform = dataset.transform
-    if raster_crs is None:
-        raster_crs = dataset.crs
+    with bundled_raster_data_env(), rasterio.open(tiff_path) as dataset:
+        if raster_crs is None:
+            raster_crs = dataset.crs
+        nodata = dataset.nodata
+        band, transform, _ = _read_window_decimated(dataset, bbox, max_cells)
+        # window bounds in raster CRS (from the decimated transform)
+        x0, y0 = transform * (0, 0)
+        x1, y1 = transform * (band.shape[1], band.shape[0])
+        rxmin, rxmax = sorted((x0, x1))
+        rymin, rymax = sorted((y0, y1))
 
     output_crs = pyproj.CRS.from_user_input(output_crs)
     raster_crs = pyproj.CRS.from_user_input(raster_crs) if raster_crs else output_crs
@@ -114,10 +181,17 @@ def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear")
     else:
         transformer = None
 
-    # Depth = -elevation; mask nodata for interpolator
-    depth_grid = -np.asarray(band, dtype=np.float64)
+    # Depth from elevation (-value), or +value when the Z sign is inverted.
+    # nodata / non-finite pixels are replaced by 0 (sea level -> depth 0), so
+    # a NaN can never propagate into a nodata hole in the hfun raster.
+    sign = 1.0 if invert_z else -1.0
+    depth_grid = np.asarray(band, dtype=np.float64) * sign
+    bad = ~np.isfinite(depth_grid)
     if nodata is not None:
-        depth_grid = np.where(band == nodata, np.nan, depth_grid)
+        bad |= (np.asarray(band) == nodata)
+    if bad.any():
+        nv = 0.0 if nodata_value is None else float(nodata_value)
+        depth_grid[bad] = sign * nv
 
     if method == "linear":
         # Build interpolator in pixel (row, col) space
@@ -143,21 +217,25 @@ def depth_field_from_tif(tiff_path, output_crs,raster_crs=None, method="linear")
             rows = np.clip(rows, 0, band.shape[0] - 1)
             cols = np.clip(cols, 0, band.shape[1] - 1)
             depth = depth_grid[rows, cols]
-            return np.asarray(depth, dtype=np.float64)
         else:
             # method == "linear": continuous (col, row) from inverse transform
             col_row = np.column_stack(inv_transform * (xs, ys))
             # RegularGridInterpolator expects (row, col) for array [rows, cols]
             row_col = col_row[:, [1, 0]]
             depth = interp(row_col)
-            return np.asarray(depth, dtype=np.float64)
+        # queries outside the read window return NaN; treat as depth 0 so the
+        # size function never produces nodata
+        depth = np.asarray(depth, dtype=np.float64)
+        depth[~np.isfinite(depth)] = 0.0
+        return depth
 
-    # Expose the raster extent in the query (output) CRS as (xmin, ymin, xmax,
-    # ymax), so callers can size a sampling grid without a separate domain.
+    # Expose the (windowed) raster extent in the query (output) CRS as
+    # (xmin, ymin, xmax, ymax), so callers can size a sampling grid.
     if raster_crs != output_crs:
-        depth_field.bounds = transform_bounds(raster_crs, output_crs, *dataset.bounds)
+        depth_field.bounds = transform_bounds(
+            raster_crs, output_crs, rxmin, rymin, rxmax, rymax)
     else:
-        depth_field.bounds = tuple(dataset.bounds)
+        depth_field.bounds = (rxmin, rymin, rxmax, rymax)
 
     return depth_field
 
