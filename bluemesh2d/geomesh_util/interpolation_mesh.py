@@ -121,8 +121,10 @@ def interpolate_from_tiff(
         Node values: depth (``-elevation``), or ``+value`` if ``invert_z``.
     """
     from bluemesh2d.feedback import _available_ram_bytes
-    from bluemesh2d.geom_util.proj_util import bundled_raster_data_env
-    from bluemesh2d.geomesh_util.depth_field import _read_window_decimated
+    from bluemesh2d.geom_util.proj_util import (
+        bundled_raster_data_env, require_georeferenced)
+    from bluemesh2d.geomesh_util.depth_field import (
+        _cell_center_offset, _read_window_decimated)
 
     if max_cells is None:
         avail = _available_ram_bytes() or 4_000_000_000
@@ -130,6 +132,7 @@ def interpolate_from_tiff(
     sign = 1.0 if invert_z else -1.0
 
     with bundled_raster_data_env(), rasterio.open(tiff_path) as src:
+        require_georeferenced(src)
         raster_crs = src.crs
         nodata = src.nodata
 
@@ -143,6 +146,7 @@ def interpolate_from_tiff(
             xs, ys = np.asarray(vert[:, 0]), np.asarray(vert[:, 1])
         bbox = (float(np.min(xs)), float(np.min(ys)),
                 float(np.max(xs)), float(np.max(ys)))
+        center_off = _cell_center_offset(src)  # 0.5 Area / 0.0 Point
         band, transform, _ = _read_window_decimated(src, bbox, max_cells)
         band = band.astype(np.float64)
 
@@ -165,12 +169,12 @@ def interpolate_from_tiff(
 
     inv_transform = ~transform
     cols, rows = inv_transform * (xs, ys)
-    # the transform is corner-referenced (index k -> corner), but band[i, j]
-    # is the cell CENTRE value; sample at centres so nodes take the depth of
-    # the cell they sit in (no half-cell shift). Rim points falling outside
-    # the centre grid are handled by the nearest-fill branch below.
-    cols = cols - 0.5
-    rows = rows - 0.5
+    # the transform is corner-referenced (index k -> corner); for Area rasters
+    # band[i, j] is the cell CENTRE value, so shift by half a cell to sample
+    # centres (no half-cell shift). Point rasters use offset 0. Rim points
+    # falling outside the centre grid are handled by the nearest-fill branch.
+    cols = cols - center_off
+    rows = rows - center_off
 
     mask_inside = (
         (cols >= 0) & (cols < band.shape[1]) &

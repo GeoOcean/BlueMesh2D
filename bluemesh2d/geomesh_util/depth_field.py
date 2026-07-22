@@ -72,6 +72,29 @@ def depth_field_from_dat(x, y, z, input_crs, output_crs, method="linear"):
     return depth_field
 
 
+def _cell_center_offset(dataset):
+    """Half-cell offset (in pixels) to reach cell centres from the transform.
+
+    The rasterio/GDAL affine is corner-referenced, but a raster value's
+    location depends on the GeoTIFF ``GTRasterTypeGeoKey`` -- surfaced as the
+    GDAL/rasterio ``AREA_OR_POINT`` tag:
+
+    - ``Area`` (default, and what a missing tag means): the value represents
+      the whole cell, so its location is the cell *centre* -> offset 0.5.
+    - ``Point``: the value is a point sample at the grid node the transform
+      already indexes -> no offset.
+
+    Callers add this to grid-building indices, or subtract it when converting
+    world coordinates to fractional indices, so sampling lands on the true
+    data location for either convention.
+    """
+    try:
+        tag = str(dataset.tags().get("AREA_OR_POINT", "Area")).strip().lower()
+    except Exception:
+        tag = "area"
+    return 0.0 if tag.startswith("point") else 0.5
+
+
 def _read_window_decimated(dataset, bbox, max_cells):
     """Read band 1 clipped to ``bbox`` (raster CRS) and decimated to fit.
 
@@ -160,11 +183,14 @@ def depth_field_from_tif(tiff_path, output_crs, raster_crs=None, method="linear"
 
     _check_method(method)
 
-    from bluemesh2d.geom_util.proj_util import bundled_raster_data_env
+    from bluemesh2d.geom_util.proj_util import (
+        bundled_raster_data_env, require_georeferenced)
     with bundled_raster_data_env(), rasterio.open(tiff_path) as dataset:
         if raster_crs is None:
+            require_georeferenced(dataset)
             raster_crs = dataset.crs
         nodata = dataset.nodata
+        center_off = _cell_center_offset(dataset)  # 0.5 Area / 0.0 Point
         band, transform, _ = _read_window_decimated(dataset, bbox, max_cells)
         # window bounds in raster CRS (from the decimated transform)
         x0, y0 = transform * (0, 0)
@@ -221,10 +247,10 @@ def depth_field_from_tif(tiff_path, output_crs, raster_crs=None, method="linear"
             # method == "linear": continuous (col, row) from inverse transform
             col_row = np.column_stack(inv_transform * (xs, ys))
             # RegularGridInterpolator expects (row, col) for array [rows, cols];
-            # subtract 0.5 because the transform is corner-referenced while the
-            # grid values sit at cell centres (index k) -- avoids a half-cell
-            # shift in the sampled depth.
-            row_col = col_row[:, [1, 0]] - 0.5
+            # subtract the half-cell offset (Area rasters) because the transform
+            # is corner-referenced while grid values sit at cell centres --
+            # avoids a half-cell shift. Point rasters use offset 0.
+            row_col = col_row[:, [1, 0]] - center_off
             depth = interp(row_col)
         # queries outside the read window return NaN; treat as depth 0 so the
         # size function never produces nodata
