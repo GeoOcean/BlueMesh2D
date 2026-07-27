@@ -99,56 +99,42 @@ reprojection at all — and the output NetCDF carries metre units with a
 3. The algorithms appear in the **Processing Toolbox** under
    *BlueMesh2D ▸ 1 - Extract water polygon* (and the following stages).
 
-### Python dependencies (important)
+### The BlueMesh2D library (important)
+
+The plugin ships **no copy of the meshing library**: it installs the
+published [`bluemesh2d`](https://pypi.org/project/bluemesh2d/) package from
+PyPI, which pulls in numpy, scipy, shapely, rasterio, matplotlib, netCDF4,
+xarray and triangle through its own dependency metadata. `pyproj` is
+installed alongside it (the library imports it without declaring it).
 
 **Automatic (recommended):** on first load the plugin checks QGIS's Python
-and, if packages are missing, opens a dialog listing them with an **Install
-now** button. pip runs inside QGIS's own interpreter — the right one on every
+and, if the library is missing or older than the version this plugin needs,
+opens a dialog with an **Install now** button — one `pip install bluemesh2d
+pyproj`. pip runs inside QGIS's own interpreter — the right one on every
 platform — with `--user`. On Debian/Ubuntu system Python (PEP 668,
-"externally managed"), packages are installed into a small plugin-managed
-virtual environment (`.../profiles/<profile>/python/bluemesh2d_deps`,
-created with `--system-site-packages`) that the plugin adds to `sys.path`
-on load — the system Python is never modified and
-`--break-system-packages` is not needed. If that Python lacks pip entirely
-(no `python3-pip`), pip is bootstrapped into the venv automatically with
-the official `get-pip.py`. On conda-based QGIS the dialog
-shows the `conda install` command instead of running pip. Optional packages
-appear as opt-in checkboxes.
+"externally managed"), packages go into a small plugin-managed virtual
+environment (`.../profiles/<profile>/python/bluemesh2d_deps`, created with
+`--system-site-packages`) that the plugin adds to `sys.path` on load — the
+system Python is never modified and `--break-system-packages` is not needed.
+If that Python lacks pip entirely (no `python3-pip`), pip is bootstrapped
+into the venv automatically with the official `get-pip.py`. On conda-based
+QGIS the dialog shows the manual command instead of running pip.
 Restart QGIS after installing. The same dialog can be reopened anytime from
 **Plugins ▸ BlueMesh2D ▸ Check / install dependencies**. The commands below
 are the manual fallback if the dialog's pip fails.
 
-Required in **QGIS's own Python** (all commonly present already):
-
-```
-numpy  scipy  shapely  pyproj  matplotlib  contourpy  rasterio  netCDF4
-```
-
-Optional:
-
-- **`triangle`** — Shewchuk's Triangle, for fast *constrained* Delaunay
-  triangulation. Without it the plugin automatically falls back to a
-  pure-`scipy` *conforming* Delaunay (same mesh character, somewhat slower).
-- **`xarray`** — required only by the **"Apply smood"** option (stage 4 /
-  all-in-one). `bluemesh2d.smood` always builds an in-memory
-  `xarray.Dataset` internally, regardless of the *merge small links*
-  sub-option. It is **not** needed for anything else — in particular every
-  UGRID NetCDF export (stage 6a and the all-in-one output) is written
-  directly with `netCDF4`. If it's missing, the algorithm now fails
-  immediately with a clear message instead of partway through refinement;
-  either install `xarray` or leave "Apply smood" unchecked.
-
-If something is missing, the algorithm names it up front. To install into the
-interpreter QGIS uses:
-
 - **Windows** — open the *OSGeo4W Shell* and run:
   ```
-  python -m pip install rasterio netCDF4 xarray        # + triangle (optional)
+  python -m pip install bluemesh2d pyproj
   ```
-- **Linux** — install into the Python QGIS runs on (Debian/Ubuntu system
-  Python needs `--break-system-packages` with `--user`):
+- **Linux** — install into the Python QGIS runs on:
   ```
-  python3 -m pip install --user rasterio netCDF4 xarray   # + triangle (optional)
+  python3 -m pip install --user bluemesh2d pyproj
+  ```
+  On Debian/Ubuntu system Python (PEP 668) use the plugin's venv instead of
+  `--break-system-packages`:
+  ```
+  ~/.local/share/QGIS/QGIS3/profiles/default/python/bluemesh2d_deps/bin/python -m pip install bluemesh2d pyproj
   ```
 - **macOS** — the official QGIS.app bundles its **own** Python, so a plain
   `python3 -m pip install` (Homebrew/system Python) installs into the wrong
@@ -156,7 +142,7 @@ interpreter QGIS uses:
   pip from inside the **QGIS Python console** (Plugins > Python Console):
   ```python
   import pip
-  pip.main(["install", "--user", "rasterio", "netCDF4", "xarray", "contourpy"])   # + "triangle" (optional)
+  pip.main(["install", "--user", "bluemesh2d", "pyproj"])
   ```
   then **restart QGIS**. `--user` installs into `~/Library/Python/3.x/...`,
   which QGIS has on its path.
@@ -169,20 +155,37 @@ interpreter QGIS uses:
   path — so use the Python-console method above. On **older bundles** the
   Terminal command was:
   ```
-  /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install rasterio netCDF4 xarray
+  /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install bluemesh2d pyproj
   ```
   (Adjust the app name if yours is e.g. `QGIS-LTR.app`.) Do **not** use
   `subprocess` with `sys.executable` from the QGIS console on macOS: there
   `sys.executable` points to the QGIS application binary, not to Python.
 
-  If you installed QGIS via **conda** (`conda install -c conda-forge qgis`),
-  install the packages into that same conda environment instead:
+- **conda** (`conda install -c conda-forge qgis`) — pip wheels would fight
+  the conda stack, so take the dependencies from conda-forge and only the
+  library from pip:
   ```
-  conda install -c conda-forge rasterio netcdf4 xarray
+  conda install -c conda-forge numpy scipy shapely rasterio pyproj matplotlib netcdf4 xarray
+  python -m pip install --no-deps bluemesh2d
   ```
+  `triangle` has no conda-forge package; without it the plugin falls back to
+  a pure-`scipy` *conforming* Delaunay (same mesh character, somewhat slower).
 
-If `rasterio` clashes with QGIS's bundled GDAL on your platform, run the
-pipeline out-of-process instead (see below).
+### Development (working from a checkout)
+
+When the plugin folder is run straight from a clone of this repository —
+typically by symlinking it into the profile's `plugins/` directory:
+
+```
+ln -s <repo>/bluemesh2d_qgis ~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/bluemesh2d_qgis
+```
+
+the dependency dialog grows an extra checkbox: **"Development: install this
+source checkout editable"**. Ticking it runs `pip install -e <repo>` instead
+of pulling the release from PyPI, so edits to `bluemesh2d/` take effect in
+QGIS after a restart, with no reinstall. The checkout is found by resolving
+the plugin folder's real path; set `BLUEMESH2D_DEV_PATH=<repo>` to point at a
+different one. The checkbox never appears in a plugin installed from a zip.
 
 ## Layout
 
@@ -193,15 +196,16 @@ bluemesh2d_qgis/
 ├── plugin.py          registers the Processing provider
 ├── provider.py        BlueMesh2DProvider
 ├── algorithm.py       Processing algorithms
-├── pipeline.py        headless orchestration facade (no QGIS dependency)
-└── bluemesh2d/        bundled copy of the meshing library
+├── deps_installer.py  dependency check + guided pip install
+└── pipeline.py        headless orchestration facade (no QGIS dependency)
 ```
 
-`pipeline.py` is the integration seam: it puts the plugin directory on
-`sys.path` so the bundled `bluemesh2d` imports as a top-level package, forces
-the non-interactive `Agg` matplotlib backend (the contour extraction needs it),
-routes progress/cancellation through the algorithm's
-`QgsProcessingFeedback`, and captures the mesher's stdout into the log.
+`pipeline.py` is the integration seam: it imports the installed `bluemesh2d`
+package and re-exports the historical names, loads pyproj before rasterio can
+bring its own libproj into the process, forces the non-interactive `Agg`
+matplotlib backend (the contour extraction needs it), routes
+progress/cancellation through the algorithm's `QgsProcessingFeedback`, and
+captures the mesher's stdout into the log.
 
 ## Usage
 
@@ -219,9 +223,10 @@ routes progress/cancellation through the algorithm's
 
 ## Notes
 
-- The bundled `bluemesh2d` is a **copy** — update it by re-syncing the upstream
-  `bluemesh2d/` package into the plugin root (`rsync -a --exclude=__pycache__
-  --exclude=poly_data <repo>/bluemesh2d/ bluemesh2d_qgis/bluemesh2d/`).
+- The plugin and the library version independently: `metadata.txt` carries the
+  plugin version, `MIN_VERSION` in `deps_installer.py` is the oldest
+  `bluemesh2d` release it works against. Bump the latter when an algorithm
+  starts relying on a new library feature.
 - Currently exposes the core raster→mesh path. ADCIRC `.grd`, Delft3D-FM forcing
   (`.pli`/`.bc`/`.ext`) and quality reports exist in the library and can be added
   as further algorithms.

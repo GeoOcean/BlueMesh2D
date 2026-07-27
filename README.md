@@ -70,7 +70,8 @@ More examples available in [`BlueMath`](https://github.com/GeoOcean/BlueMath/tre
 
 A **QGIS Processing plugin** exposes the raster-to-mesh part of `BlueMesh2D` as a
 set of Processing algorithms, so a bathymetry-to-mesh workflow can be run
-without writing any Python. It bundles its own copy of `bluemesh2d` and covers:
+without writing any Python. On first run it installs `bluemesh2d` from PyPI into
+QGIS's Python (Plugins ▸ BlueMesh2D ▸ *Check / install dependencies*), and covers:
 
 1. **Extract water polygon** from a bathymetry raster (coastline / domain
    extraction).

@@ -8,7 +8,10 @@ crashing QGIS's plugin loader with a raw traceback.
 
 from qgis.core import QgsApplication
 
-from .deps_installer import REQUIRED, DepsDialog, activate_venv, find_missing
+from .deps_installer import (
+    MIN_VERSION, REQUIRED, DepsDialog, activate_venv, find_missing,
+    needs_upgrade,
+)
 
 
 class BlueMesh2DPlugin:
@@ -38,9 +41,12 @@ class BlueMesh2DPlugin:
         # must be on sys.path before checking what is missing
         activate_venv()
         missing = find_missing(REQUIRED)
-        if missing:
-            msg = ("Missing Python packages: " + ", ".join(missing)
-                   + " — use Plugins > BlueMesh2D > Check / install "
+        if missing or needs_upgrade():
+            what = ("The BlueMesh2D library is not installed in this QGIS"
+                    if missing else
+                    f"The installed BlueMesh2D library is older than "
+                    f"{MIN_VERSION}")
+            msg = (what + " — use Plugins > BlueMesh2D > Check / install "
                    "dependencies, then restart QGIS.")
             parent = self._main_window()
             if parent is not None:
@@ -64,12 +70,12 @@ class BlueMesh2DPlugin:
         try:
             from .provider import BlueMesh2DProvider
         except ModuleNotFoundError as exc:
-            # dependencies are fine, so this is an internal packaging problem
-            # (e.g. a stale bundled `bluemesh2d` copy), not a pip issue
-            msg = ("BlueMesh2D failed to load because of a plugin packaging "
-                   f"problem (not missing dependencies):\n\n{exc}\n\n"
-                   "Reinstall the plugin (the bundled 'bluemesh2d' package "
-                   "looks incomplete or out of date).")
+            # bluemesh2d itself is importable, so this is a partial install:
+            # one of its own dependencies did not make it in
+            msg = ("BlueMesh2D is installed but incomplete — a module it "
+                   f"depends on is missing:\n\n{exc}\n\n"
+                   "Reinstall it from Plugins > BlueMesh2D > Check / install "
+                   "dependencies, then restart QGIS.")
             parent = self._main_window()
             if parent is not None:
                 from qgis.PyQt.QtWidgets import QMessageBox
