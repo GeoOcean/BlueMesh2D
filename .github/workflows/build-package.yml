@@ -8,27 +8,22 @@ on:
 jobs:
   build-and-publish-package:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for PyPI Trusted Publishing (OIDC)
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags so setuptools-scm sees the tag
 
       - name: Set Up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Dependencies
-        run: |
-          pip install build setuptools-scm twine
-          conda install -c conda-forge conda-build anaconda-client
-
-      - name: Get Version
-        id: get_version
-        run: |
-          echo "version=$(python -c 'import setuptools_scm; print(setuptools_scm.get_version())')" >> $GITHUB_ENV
-        env:
-          GITHUB_ENV: ${{ github.env }}
+      - name: Install build frontend
+        run: pip install build
 
       - name: Build Python Package
         run: |
@@ -36,7 +31,4 @@ jobs:
           python -m build
 
       - name: Publish to PyPI
-        run: python -m twine upload dist/* --verbose
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        uses: pypa/gh-action-pypi-publish@release/v1
