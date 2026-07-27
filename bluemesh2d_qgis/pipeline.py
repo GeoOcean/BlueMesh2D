@@ -2,24 +2,15 @@
 
 Every function that used to be defined here has been moved into the core
 package (see ``bluemesh2d.pipeline`` for the map of stage -> module) so it
-can be used from plain Python without the QGIS plugin. This module keeps
-the historical import surface (``from .pipeline import ...``) working, and
-still owns the two plugin-environment concerns: making the bundled
-``bluemesh2d`` importable, and forcing matplotlib to a headless backend.
+can be used from plain Python without the QGIS plugin. The plugin no longer
+bundles a copy of it: ``bluemesh2d`` is installed from PyPI by the
+dependency dialog (see ``deps_installer``). This module keeps the historical
+import surface (``from .pipeline import ...``) working, and owns the two
+plugin-environment concerns that must happen before the first library
+import: the pyproj/libproj load order, and a headless matplotlib backend.
 """
 
 from __future__ import annotations
-
-import os
-import sys
-
-# --- make the bundled copy of bluemesh2d importable and matplotlib headless ---
-# `bluemesh2d` sits directly in the plugin root, so add the plugin directory to
-# sys.path and import it as a top-level package (works both inside QGIS and when
-# this module is used standalone / headless).
-_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
 
 # pyproj must load BEFORE any pip rasterio wheel brings its own copy of
 # libproj into the process: the reverse order makes pyproj misbehave with

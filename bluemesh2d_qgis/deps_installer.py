@@ -2,12 +2,14 @@
 
 This module must stay importable in *any* state of the environment: it only
 imports the standard library and ``qgis.PyQt`` at module level (no numpy, no
-shapely, no bundled ``bluemesh2d``), so the plugin can always load far enough
-to explain what is missing and offer to install it.
+shapely, no ``bluemesh2d``), so the plugin can always load far enough to
+explain what is missing and offer to install it.
 
-The package lists are duplicated from ``bluemesh2d/dependencies.py`` on
-purpose (the installer must work when the bundled package itself is broken);
-keep the two in sync.
+The plugin ships no copy of the library: it installs the published
+``bluemesh2d`` distribution from PyPI, which pulls numpy, scipy, shapely,
+rasterio, matplotlib, netCDF4, xarray and triangle in through its own
+metadata. Developers working from a checkout can install that checkout
+editable instead -- see :func:`source_checkout`.
 """
 
 from __future__ import annotations
@@ -21,18 +23,25 @@ import subprocess
 import sys
 import sysconfig
 
-# Required at runtime by the meshing pipeline (import name == pip name for
-# every entry). Keep in sync with bluemesh2d/dependencies.py.
-REQUIRED = ("numpy", "scipy", "shapely", "rasterio", "pyproj",
-            "matplotlib", "contourpy", "netCDF4")
+# Oldest bluemesh2d release this plugin version works against.
+MIN_VERSION = "0.1.1"
 
-# Optional packages, offered as checkboxes in the dialog.
-OPTIONAL = {
-    "xarray": "needed only by the smood (orthogonalization) option",
-    "triangle": "faster, truly constrained Delaunay triangulation",
-}
-# checkbox state the dialog opens with
-OPTIONAL_DEFAULT = {"xarray": True, "triangle": False}
+# What pip installs. Everything the pipeline needs comes from bluemesh2d's own
+# dependency metadata, EXCEPT pyproj: the library imports it but does not
+# declare it, and nothing else in the tree pulls it in, so it stays explicit.
+PIP_REQUIRED = (f"bluemesh2d>={MIN_VERSION}", "pyproj")
+
+# Conda-forge names of the dependency stack. Only used to spell out the
+# manual command on conda-based QGIS installs (see manual_command): there is
+# no conda package for bluemesh2d itself, and pip must not drag binary wheels
+# into a conda environment.
+CONDA_PACKAGES = ("numpy", "scipy", "shapely", "rasterio", "pyproj",
+                  "matplotlib", "netcdf4", "xarray")
+
+# What is checked for presence, as import names. `bluemesh2d` is a PEP 420
+# namespace package, so a bare `bluemesh2d` lookup succeeds for any stray
+# directory of that name on sys.path -- check a real submodule instead.
+REQUIRED = ("bluemesh2d.pipeline", "pyproj")
 
 
 def find_missing(names):
@@ -44,6 +53,10 @@ def find_missing(names):
     bundle their own GDAL/GEOS that clash with the libraries QGIS already
     loaded. Presence is what we need here; the real imports happen on the
     next QGIS start.
+
+    Dotted names work too: ``find_spec`` imports the *parent* package only
+    (a namespace package, so no code runs) and then merely locates the
+    submodule.
     """
     import importlib.util
 
@@ -55,6 +68,81 @@ def find_missing(names):
         except Exception:
             missing.append(name)
     return missing
+
+
+def _version_tuple(text):
+    """Numeric release part of a version string, for ordering ('1.2.3rc1')."""
+    parts = []
+    for chunk in text.split(".")[:3]:
+        digits = ""
+        for ch in chunk:
+            if not ch.isdigit():
+                break
+            digits += ch
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def installed_version(dist="bluemesh2d"):
+    """Version of an installed distribution, or None -- metadata only.
+
+    Never imports the package: reading metadata is safe in a live QGIS,
+    importing freshly installed binary wheels is not.
+    """
+    try:
+        from importlib.metadata import version
+        return version(dist)
+    except Exception:
+        return None
+
+
+def needs_upgrade():
+    """True when bluemesh2d is installed but older than :data:`MIN_VERSION`.
+
+    Such an install satisfies :func:`find_missing` yet is too old for this
+    plugin, so the dialog must still offer to install.
+    """
+    current = installed_version()
+    if current is None:
+        return False
+    return _version_tuple(current) < _version_tuple(MIN_VERSION)
+
+
+def source_checkout():
+    """Repo root when this plugin folder sits inside a bluemesh2d checkout.
+
+    Undocumented developer hook: returns a path only for someone running the
+    plugin straight from the repository (typically a symlink from the QGIS
+    profile's ``plugins/`` into the checkout -- hence the ``realpath``), or
+    when ``BLUEMESH2D_DEV_PATH`` points at a checkout. A plugin installed
+    from a zip always gets ``None``, so the dialog's development section
+    never shows up for end users.
+    """
+    env = os.environ.get("BLUEMESH2D_DEV_PATH")
+    candidates = [env] if env else []
+    candidates.append(
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    for root in candidates:
+        cfg = os.path.join(root, "pyproject.toml")
+        try:
+            with open(cfg, encoding="utf-8") as fh:
+                if 'name = "bluemesh2d"' in fh.read():
+                    return root
+        except OSError:
+            continue
+    return None
+
+
+def dev_install(path):
+    """Install a source checkout editable (``pip install -e <path>``).
+
+    Goes through :func:`run_pip`, so it lands in the same place as a normal
+    install (plugin venv on PEP 668 systems, user site elsewhere) and picks
+    up the same numpy pin. Dependencies resolve from the checkout's own
+    pyproject.toml; pyproj is added for the same reason as in
+    :data:`PIP_REQUIRED`.
+    """
+    return run_pip(["-e", path, "pyproj"])
 
 
 def _venv_dir():
@@ -275,11 +363,20 @@ def pip_args(packages, force_break=False):
     return args + list(packages)
 
 
-def manual_command(packages):
-    """The per-OS command a user can run by hand if the dialog's pip fails."""
+def manual_command(packages=PIP_REQUIRED):
+    """The per-OS command a user can run by hand if the dialog's pip fails.
+
+    ``packages`` are pip requirement specs; conda gets the same specs, since
+    bluemesh2d is on conda-forge only via pip anyway -- there is no apt/conda
+    system package for it, which is why the old distro-package hint is gone.
+    """
     pkgs = " ".join(packages)
     if _is_conda():
-        return f"conda install -c conda-forge {pkgs.lower()}"
+        # bluemesh2d has no conda package, but its dependencies do -- and
+        # letting pip pull binary wheels into a conda env is what breaks it.
+        # So: conda for the stack, pip --no-deps for the library itself.
+        return (f"conda install -c conda-forge {' '.join(CONDA_PACKAGES)}\n"
+                f"  python -m pip install --no-deps bluemesh2d>={MIN_VERSION}")
     system = platform.system()
     if system == "Windows":
         return f"python -m pip install {pkgs}   (in the OSGeo4W Shell)"
@@ -288,9 +385,7 @@ def manual_command(packages):
         return (f"import pip; pip.main(['install', '--user', {arglist}])"
                 "   (in the QGIS Python console)")
     if _is_externally_managed():
-        apt = " ".join("python3-" + p.lower() for p in packages)
-        return (f"{_venv_dir()}/bin/python -m pip install {pkgs}\n"
-                f"  (or system packages: sudo apt install {apt})")
+        return f"{_venv_dir()}/bin/python -m pip install {pkgs}"
     return f"python3 -m pip install --user {pkgs}"
 
 
@@ -333,8 +428,8 @@ def run_pip(packages, log=None):
         packages = list(packages) + [constraint]
 
     if _is_conda():
-        return False, ("This QGIS runs on a conda Python; install the "
-                       "packages with conda instead:\n  "
+        return False, ("This QGIS runs on a conda Python; pip wheels would "
+                       "fight the conda stack. Install by hand instead:\n  "
                        + manual_command(packages))
 
     if _is_externally_managed():
@@ -394,38 +489,43 @@ class DepsDialog:
             QPushButton, QVBoxLayout,
         )
 
-        self._missing_required = find_missing(REQUIRED)
-        self._missing_optional = find_missing(list(OPTIONAL))
+        self._missing = find_missing(REQUIRED)
+        self._outdated = needs_upgrade()
+        self._checkout = source_checkout()
 
         self.dialog = QDialog(parent)
         self.dialog.setWindowTitle("BlueMesh2D — Python dependencies")
         self.dialog.setMinimumWidth(560)
         lay = QVBoxLayout(self.dialog)
 
-        if self._missing_required:
+        if self._missing:
             lay.addWidget(QLabel(
-                "<b>BlueMesh2D needs these Python packages "
-                "(not found in this QGIS):</b><br>"
-                + ", ".join(self._missing_required)))
+                "<b>BlueMesh2D is not installed in this QGIS.</b><br>"
+                "Installing it also brings in numpy, scipy, shapely, "
+                "rasterio, matplotlib, netCDF4, xarray and triangle."))
+        elif self._outdated:
+            lay.addWidget(QLabel(
+                f"<b>BlueMesh2D {installed_version()} is installed, but this "
+                f"plugin needs {MIN_VERSION} or newer.</b>"))
         else:
             lay.addWidget(QLabel(
-                "<b>All required packages are installed.</b>"))
+                f"<b>BlueMesh2D {installed_version()} is installed.</b>"))
 
-        self._boxes = {}
-        if self._missing_optional:
-            lay.addWidget(QLabel("Optional packages:"))
-            for name in self._missing_optional:
-                box = QCheckBox(f"{name} — {OPTIONAL[name]}")
-                box.setChecked(OPTIONAL_DEFAULT.get(name, False))
-                self._boxes[name] = box
-                lay.addWidget(box)
+        self.dev_box = None
+        if self._checkout is not None:
+            # only ever visible when running from a source checkout
+            self.dev_box = QCheckBox(
+                "Development: install this source checkout editable\n"
+                f"({self._checkout})")
+            self.dev_box.setChecked(False)
+            lay.addWidget(self.dev_box)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(160)
         self.log.setPlaceholderText(
             "pip output will appear here.\n\nManual fallback command:\n  "
-            + manual_command(self._missing_required or list(REQUIRED)))
+            + manual_command())
         lay.addWidget(self.log)
 
         btns = QHBoxLayout()
@@ -438,31 +538,40 @@ class DepsDialog:
 
         self.install_btn.clicked.connect(self._install)
         self.close_btn.clicked.connect(self.dialog.reject)
-        if not self._missing_required and not self._missing_optional:
+        # a developer may want to switch to an editable install at any time,
+        # so the button stays live whenever the dev checkbox is available
+        if not self._missing and not self._outdated and self.dev_box is None:
             self.install_btn.setEnabled(False)
 
-    def _selected_packages(self):
-        pkgs = list(self._missing_required)
-        pkgs += [n for n, b in self._boxes.items() if b.isChecked()]
-        return pkgs
+    def _dev_selected(self):
+        return self.dev_box is not None and self.dev_box.isChecked()
 
     def _install(self):
         from qgis.PyQt.QtCore import Qt
         from qgis.PyQt.QtWidgets import QApplication
 
-        pkgs = self._selected_packages()
-        if not pkgs:
-            self.log.setPlainText("Nothing selected to install.")
-            return
-        self.log.setPlainText(f"Installing: {', '.join(pkgs)} ...\n")
+        dev = self._dev_selected()
+        if dev:
+            self.log.setPlainText(
+                f"Installing editable: {self._checkout} ...\n")
+        else:
+            self.log.setPlainText(
+                f"Installing: {', '.join(PIP_REQUIRED)} ...\n")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         try:
-            ok, out = run_pip(pkgs)
+            ok, out = (dev_install(self._checkout) if dev
+                       else run_pip(list(PIP_REQUIRED)))
         finally:
             QApplication.restoreOverrideCursor()
         self.log.appendPlainText(out)
-        still = find_missing(pkgs)
+        # the post-install check must see what pip just wrote: put the venv /
+        # user site on sys.path and drop the finders' cached directory listings
+        import importlib
+
+        activate_venv()
+        importlib.invalidate_caches()
+        still = find_missing(REQUIRED)
         if ok and not still:
             self.log.appendPlainText(
                 "\nDone. Please RESTART QGIS to activate BlueMesh2D.")
@@ -471,7 +580,7 @@ class DepsDialog:
             self.log.appendPlainText(
                 "\nInstallation did not complete"
                 + (f" (still missing: {', '.join(still)})." if still else ".")
-                + "\nManual fallback:\n  " + manual_command(still or pkgs))
+                + "\nManual fallback:\n  " + manual_command())
 
     def exec(self):
         # QGIS shows an app-wide busy cursor while plugins load; without an
@@ -488,8 +597,8 @@ class DepsDialog:
 
 
 def ensure_dependencies(parent=None):
-    """Return True when all required packages import; else show the dialog."""
-    if not find_missing(REQUIRED):
+    """Return True when bluemesh2d is present and recent; else show the dialog."""
+    if not find_missing(REQUIRED) and not needs_upgrade():
         return True
     DepsDialog(parent).exec()
     return not find_missing(REQUIRED)

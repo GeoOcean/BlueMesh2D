@@ -2,8 +2,8 @@
 name=BlueMesh2D
 qgisMinimumVersion=3.22
 description=Generate unstructured triangular meshes from bathymetry rasters (BlueMesh2D)
-about=Wraps the BlueMesh2D meshing library as a QGIS Processing algorithm. Extracts a coastline/domain from a bathymetry GeoTIFF, builds a depth-based, gradient-limited element-size function (with an optional local detail region), refines and smooths a triangular mesh, samples bathymetry onto the nodes, and writes a UGRID NetCDF that loads as a QGIS mesh layer. Requires numpy, scipy, shapely, rasterio, pyproj, xarray, netCDF4 and triangle in the QGIS Python environment.
-version=0.1.0
+about=Wraps the BlueMesh2D meshing library as a QGIS Processing algorithm. Extracts a coastline/domain from a bathymetry GeoTIFF, builds a depth-based, gradient-limited element-size function (with an optional local detail region), refines and smooths a triangular mesh, samples bathymetry onto the nodes, and writes a UGRID NetCDF that loads as a QGIS mesh layer. Requires the bluemesh2d Python package, installed from PyPI on first run through Plugins > BlueMesh2D > Check / install dependencies (it brings numpy, scipy, shapely, rasterio, xarray, netCDF4 and triangle with it).
+version=0.1.1
 author=Geomatics and Ocean Engineering Group
 email=faugeree@unican.es
 tracker=https://github.com/GeoOcean/BlueMesh2D/issues
