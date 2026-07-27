@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mesh_geocean.webp" alt="BlueMesh2D logo" width="120">
+  <img src="https://raw.githubusercontent.com/GeoOcean/BlueMesh2D/develop/assets/mesh_geocean.webp" alt="BlueMesh2D logo" width="120">
 </p>
 
 > **BlueMesh2D** is the successor of **PyMesh2D**. The repository has been recreated under its new name as part of the BlueMath ecosystem. While the repository history has changed, the codebase and its development continue from the original project.
