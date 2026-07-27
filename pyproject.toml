@@ -58,7 +58,7 @@ local_scheme = "no-local-version"
 # so namespace discovery is required, otherwise the wheel ships no code.
 # The QGIS plugin (a vendored copy) and the tests are not part of the library.
 include = ["bluemesh2d*"]
-exclude = ["bluemesh2d_qgis*", "tests*", "assets*"]
+exclude = ["bluemesh2d_qgis*", "tests*", "assets*", "docs*"]
 namespaces = true
 
 [tool.setuptools.package-data]
