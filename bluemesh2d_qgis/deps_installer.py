@@ -19,7 +19,7 @@ import io
 import os
 import platform
 import site
-import subprocess
+import subprocess  # nosec B404 -- fixed argv, shell=False; see _venv_has_pip
 import sys
 import sysconfig
 
@@ -165,10 +165,9 @@ def _migrate_old_venv():
     old = os.path.join(plugins_dir, "bluemesh2d_deps")
     new = _venv_dir()
     if os.path.isdir(old) and not os.path.isdir(new):
-        try:
+        # on failure just fall through: a fresh venv is created at `new`
+        with contextlib.suppress(Exception):
             shutil.move(old, new)
-        except Exception:
-            pass  # fall through: a fresh venv will be created at `new`
 
 
 def _venv_site_packages(venv=None):
@@ -218,11 +217,19 @@ def _venv_python(venv):
 
 
 def _venv_has_pip(venv):
+    """True when the plugin venv already has a working pip.
+
+    Every ``subprocess.run`` in this module (here and below) runs a fixed
+    argument list with ``shell=False``: the executable is the interpreter of
+    the venv this plugin created itself and the arguments are literals or
+    paths this module computed. No user-supplied string reaches the command
+    line, hence the ``nosec`` markers.
+    """
     py = _venv_python(venv)
     if not os.path.exists(py):
         return False
     try:
-        return subprocess.run([py, "-m", "pip", "--version"],
+        return subprocess.run([py, "-m", "pip", "--version"],  # nosec B603
                               capture_output=True, timeout=120
                               ).returncode == 0
     except Exception:
@@ -240,15 +247,19 @@ def _bootstrap_pip(venv, log):
     import urllib.request
 
     url = "https://bootstrap.pypa.io/get-pip.py"
+    # constant, hard-coded https URL -- assert it anyway so no future edit can
+    # turn this into a file:/ or custom-scheme fetch
+    if not url.startswith("https://"):
+        raise ValueError("get-pip.py must be fetched over https")
     log.append(f"pip is missing: bootstrapping it from {url} ...")
     try:
-        with urllib.request.urlopen(url, timeout=60) as resp:
+        with urllib.request.urlopen(url, timeout=60) as resp:  # nosec B310
             script = resp.read()
         with tempfile.NamedTemporaryFile("wb", suffix="_get-pip.py",
                                          delete=False) as f:
             f.write(script)
             path = f.name
-        proc = subprocess.run([_venv_python(venv), path],
+        proc = subprocess.run([_venv_python(venv), path],  # nosec B603
                               capture_output=True, text=True, timeout=600)
         os.unlink(path)
         log.append(proc.stdout[-2000:])
@@ -285,7 +296,7 @@ def _create_venv(log):
         return None
     py = _venv_python(venv)
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603
             [py, "-Im", "ensurepip", "--upgrade", "--default-pip"],
             capture_output=True, text=True, timeout=600)
         if proc.returncode == 0 and _venv_has_pip(venv):
@@ -305,7 +316,7 @@ def _venv_pip_install(packages, log):
         return False
     py = _venv_python(venv)
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603
             [py, "-m", "pip", "install", *packages],
             capture_output=True, text=True, timeout=1800)
         log.append(proc.stdout)
@@ -323,13 +334,11 @@ def _venv_pip_install(packages, log):
 def _is_externally_managed():
     """True on PEP 668 interpreters (Debian/Ubuntu system Python)."""
     for key in ("stdlib", "platstdlib"):
-        try:
+        with contextlib.suppress(Exception):
             marker = os.path.join(sysconfig.get_path(key),
                                   "EXTERNALLY-MANAGED")
             if os.path.exists(marker):
                 return True
-        except Exception:
-            pass
     return False
 
 
@@ -557,7 +566,7 @@ class DepsDialog:
         else:
             self.log.setPlainText(
                 f"Installing: {', '.join(PIP_REQUIRED)} ...\n")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             ok, out = (dev_install(self._checkout) if dev
@@ -589,7 +598,7 @@ class DepsDialog:
         from qgis.PyQt.QtCore import Qt
         from qgis.PyQt.QtWidgets import QApplication
 
-        QApplication.setOverrideCursor(Qt.ArrowCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.ArrowCursor)
         try:
             return self.dialog.exec()
         finally:

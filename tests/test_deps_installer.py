@@ -90,6 +90,17 @@ def test_source_checkout_honours_env_override(deps, monkeypatch, tmp_path):
     assert deps.source_checkout() == str(tmp_path)
 
 
+def test_metadata_external_deps_matches_pip_required(deps):
+    """metadata.txt advertises to plugins.qgis.org what we actually install."""
+    import configparser
+
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(_PLUGIN_DIR, "metadata.txt"), encoding="utf-8")
+    advertised = [s.strip() for s in
+                  cfg["general"]["external_deps"].split(",") if s.strip()]
+    assert advertised == list(deps.PIP_REQUIRED)
+
+
 def test_manual_command_mentions_both_packages(deps, monkeypatch):
     monkeypatch.setattr(deps, "_is_conda", lambda: False)
     for system in ("Linux", "Windows", "Darwin"):

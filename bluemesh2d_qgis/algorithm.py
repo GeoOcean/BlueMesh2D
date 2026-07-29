@@ -26,6 +26,7 @@ Intermediate results live in ordinary QGIS layers (polygons, points, lines,
 rasters), so every stage can be inspected -- and edited -- before the next.
 """
 
+import contextlib
 import os
 
 from qgis.PyQt.QtCore import QVariant
@@ -124,11 +125,11 @@ def _num(alg, name, label, default, minv=-1e9, maxv=1e9, integer=False,
          advanced=False):
     p = QgsProcessingParameterNumber(
         name, label,
-        QgsProcessingParameterNumber.Integer if integer
-        else QgsProcessingParameterNumber.Double,
+        QgsProcessingParameterNumber.Type.Integer if integer
+        else QgsProcessingParameterNumber.Type.Double,
         defaultValue=default, minValue=minv, maxValue=maxv)
     if advanced:
-        p.setFlags(p.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        p.setFlags(p.flags() | QgsProcessingParameterDefinition.Flag.FlagAdvanced)
     alg.addParameter(p)
 
 
@@ -323,11 +324,11 @@ class _BaseAlg(QgsProcessingAlgorithm):
         (``_valid_parts`` / ``_source_to_shapely``), so refusing the feature
         up front only breaks the workflow.
         """
-        try:
+        # best effort: on a QGIS build where the enum or the setter is
+        # unavailable the default check simply stays in place
+        with contextlib.suppress(Exception):
             from qgis.core import QgsFeatureRequest
-            context.setInvalidGeometryCheck(QgsFeatureRequest.GeometryNoCheck)
-        except Exception:
-            pass
+            context.setInvalidGeometryCheck(QgsFeatureRequest.InvalidGeometryCheck.GeometryNoCheck)
 
     def flags(self):
         # Force execution on the MAIN thread. Processing runs algorithms on a
@@ -336,7 +337,7 @@ class _BaseAlg(QgsProcessingAlgorithm):
         # used off the main thread. NoThreading avoids that entirely.
         f = super().flags()
         try:
-            return f | QgsProcessingAlgorithm.FlagNoThreading
+            return f | QgsProcessingAlgorithm.Flag.FlagNoThreading
         except AttributeError:  # QGIS >= 3.36 enum location
             from qgis.core import Qgis
             return f | Qgis.ProcessingAlgorithmFlag.NoThreading
@@ -417,11 +418,11 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         _num(self, self.COAST_ZMAX, "Coastline level / wet threshold (m)", 0.0, -1e4, 1e4)
         self.addParameter(QgsProcessingParameterNumber(
             self.DEEP_ZMAX, "Deep level (m, optional; e.g. -300 keeps z > -300)",
-            QgsProcessingParameterNumber.Double, optional=True,
+            QgsProcessingParameterNumber.Type.Double, optional=True,
             minValue=-1e5, maxValue=1e4))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.EXTENT, "Extent polygon (optional; default = raster extent)",
-            [QgsProcessing.TypeVectorPolygon], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPolygon], optional=True))
         self.addParameter(QgsProcessingParameterBoolean(
             self.FIX_EXTENT_VERTS,
             "Fix polygon vertices on the domain boundary (extent polygon or "
@@ -440,10 +441,10 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterNumber(
             self.NODATA_VALUE,
             "Replace nodata with this elevation (m; empty = treat as deep "
-            "water)", QgsProcessingParameterNumber.Double, optional=True,
+            "water)", QgsProcessingParameterNumber.Type.Double, optional=True,
             minValue=-1e5, maxValue=1e5))
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, "1 - Water polygon", QgsProcessing.TypeVectorPolygon))
+            self.OUTPUT, "1 - Water polygon", QgsProcessing.SourceType.TypeVectorPolygon))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -505,7 +506,7 @@ class ExtractWaterPolygonAlgorithm(_BaseAlg):
         fields.append(QgsField("area_km2", QVariant.Double))
         sink, dest_id = self.parameterAsSink(
             parameters, self.OUTPUT, context, fields,
-            QgsWkbTypes.MultiPolygonZ if fix_verts else QgsWkbTypes.MultiPolygon,
+            QgsWkbTypes.Type.MultiPolygonZ if fix_verts else QgsWkbTypes.Type.MultiPolygon,
             raster.crs())
 
         if fix_verts:
@@ -628,19 +629,19 @@ class SetFixedInAreaAlgorithm(QgsProcessingFeatureBasedAlgorithm):
         return "Water polygon (flagged)"
 
     def inputLayerTypes(self):
-        return [QgsProcessing.TypeVectorPolygon]
+        return [QgsProcessing.SourceType.TypeVectorPolygon]
 
     def sourceFlags(self):
         # water polygons can be invalid (self-touching rings from the clip);
         # don't let Processing skip them on a validity check
         from qgis.core import QgsProcessingFeatureSource
-        return QgsProcessingFeatureSource.FlagSkipGeometryValidityChecks
+        return QgsProcessingFeatureSource.Flag.FlagSkipGeometryValidityChecks
 
     def supportInPlaceEdit(self, layer):
         # in-place must not change the geometry type, so the layer must
         # already carry Z (as the stage-1 output does when fixing vertices)
         try:
-            return (layer.geometryType() == QgsWkbTypes.PolygonGeometry
+            return (layer.geometryType() == QgsWkbTypes.GeometryType.PolygonGeometry
                     and QgsWkbTypes.hasZ(layer.wkbType()))
         except Exception:
             return False
@@ -656,7 +657,7 @@ class SetFixedInAreaAlgorithm(QgsProcessingFeatureBasedAlgorithm):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.AREA, "Area polygon layer (optional; use 'Selected features "
             "only' for a map selection)",
-            [QgsProcessing.TypeVectorPolygon], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPolygon], optional=True))
         self.addParameter(QgsProcessingParameterEnum(
             self.VALUE, "Set vertices inside the area to",
             options=self._VALUES, defaultValue=0))
@@ -777,10 +778,10 @@ class _BuildHfunBase(_BaseAlg):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.DOMAIN, "Water polygon (optional; limits hfun to this area "
             "+ buffer, from stage 1)",
-            [QgsProcessing.TypeVectorPolygon], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPolygon], optional=True))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.DETAIL, "Detail region (optional, polygons)",
-            [QgsProcessing.TypeVectorPolygon], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPolygon], optional=True))
 
     def _add_limits(self):
         _num(self, self.HMIN, "Min element size (m)", 500.0, 0.1)
@@ -806,7 +807,7 @@ class _BuildHfunBase(_BaseAlg):
         self.addParameter(QgsProcessingParameterNumber(
             self.NODATA_VALUE,
             "Replace nodata with this elevation (m; empty = 0 / sea level)",
-            QgsProcessingParameterNumber.Double, optional=True,
+            QgsProcessingParameterNumber.Type.Double, optional=True,
             minValue=-1e5, maxValue=1e5))
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.OUTPUT, "2 - Element-size raster (hfun)"))
@@ -1032,10 +1033,10 @@ class BuildHfunConstantAlgorithm(_BaseAlg):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.WATER, "Water polygon (from stage 1)",
-            [QgsProcessing.TypeVectorPolygon]))
+            [QgsProcessing.SourceType.TypeVectorPolygon]))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.DETAIL, "Detail region (optional, polygons)",
-            [QgsProcessing.TypeVectorPolygon], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPolygon], optional=True))
         _num(self, self.H_DOMAIN, "Element size in the domain (m)",
              1000.0, 0.1)
         _num(self, self.H_DETAIL, "Element size in the detail region (m)",
@@ -1127,13 +1128,13 @@ class ResampleBoundaryAlgorithm(_BaseAlg):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.WATER, "Water polygon (from stage 1)",
-            [QgsProcessing.TypeVectorPolygon]))
+            [QgsProcessing.SourceType.TypeVectorPolygon]))
         self.addParameter(QgsProcessingParameterRasterLayer(
             self.HFUN, "Element-size raster (from stage 2)"))
         _num(self, self.MIN_ANGLE, "Min boundary angle (deg)", 25.0, 0.0, 180.0)
         _num(self, self.MIN_HOLE_VERTS, "Min hole vertices", 15, 0, 10000, integer=True)
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.EDGES, "3 - Boundary edges", QgsProcessing.TypeVectorLine))
+            self.EDGES, "3 - Boundary edges", QgsProcessing.SourceType.TypeVectorLine))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -1181,7 +1182,7 @@ class ResampleBoundaryAlgorithm(_BaseAlg):
         efields.append(QgsField("ring", QVariant.String))
         efields.append(QgsField("vertices", QVariant.Int))
         esink, edest = self.parameterAsSink(
-            parameters, self.EDGES, context, efields, QgsWkbTypes.LineString, crs)
+            parameters, self.EDGES, context, efields, QgsWkbTypes.Type.LineString, crs)
 
         def add_ring(part_id, ring_name, coords_utm):
             coords = np.asarray(coords_utm, dtype=float)
@@ -1225,7 +1226,7 @@ class ResampleBoundaryAlgorithm(_BaseAlg):
                         from qgis.core import Qgis
                         marker_line.setPlacement(Qgis.MarkerLinePlacement.Vertex)
                     except Exception:
-                        marker_line.setPlacement(QgsMarkerLineSymbolLayer.Vertex)
+                        marker_line.setPlacement(QgsMarkerLineSymbolLayer.Placement.Vertex)
                     marker_line.setSubSymbol(QgsMarkerSymbol.createSimple(
                         {"name": "circle", "color": "227,26,28,255",
                          "outline_style": "no", "size": "1.4"}))
@@ -1291,7 +1292,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.EDGES, "Boundary edges (from stage 3, possibly edited)",
-            [QgsProcessing.TypeVectorLine]))
+            [QgsProcessing.SourceType.TypeVectorLine]))
         self.addParameter(QgsProcessingParameterRasterLayer(
             self.HFUN, "Element-size raster (from stage 2)"))
         self.addParameter(QgsProcessingParameterRasterLayer(
@@ -1299,7 +1300,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.FIXED_POINTS,
             "Fixed points (optional; forced mesh nodes, never moved)",
-            [QgsProcessing.TypeVectorPoint], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPoint], optional=True))
         self.addParameter(QgsProcessingParameterEnum(
             self.KIND, "Refinement kind", options=self._KIND_OPTS, defaultValue=0))
         self.addParameter(QgsProcessingParameterBoolean(
@@ -1323,7 +1324,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
             self.NODATA_VALUE,
             "Replace nodata with this elevation when sampling depths (m; "
             "empty = nearest valid pixel)",
-            QgsProcessingParameterNumber.Double, optional=True,
+            QgsProcessingParameterNumber.Type.Double, optional=True,
             minValue=-1e5, maxValue=1e5))
         meta = QgsProcessingParameterString(
             self.METADATA,
@@ -1331,7 +1332,7 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
             "overwrites the default global attributes, e.g. institution, "
             "source, history, title)",
             multiLine=True, optional=True)
-        meta.setFlags(meta.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        meta.setFlags(meta.flags() | QgsProcessingParameterDefinition.Flag.FlagAdvanced)
         self.addParameter(meta)
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT, "4 - Output mesh (UGRID NetCDF)", fileFilter="NetCDF (*.nc)"))
@@ -1450,7 +1451,7 @@ def _boundary_lines_by_type(source, target_crs):
     field_names = [f.name() for f in source.fields()]
     has_btype = "btype" in field_names
 
-    if QgsWkbTypes.geometryType(source.wkbType()) == QgsWkbTypes.PointGeometry:
+    if QgsWkbTypes.geometryType(source.wkbType()) == QgsWkbTypes.GeometryType.PointGeometry:
         if "loop" not in field_names or "seq" not in field_names:
             raise QgsProcessingException(
                 "The boundary point layer must have 'loop' and 'seq' "
@@ -1513,7 +1514,7 @@ def _style_water_polygon(dest, context, feedback):
             marker_type = Qgis.SymbolType.Marker
         except (ImportError, AttributeError):
             from qgis.core import QgsSymbol
-            marker_type = QgsSymbol.Marker
+            marker_type = QgsSymbol.SymbolType.Marker
 
         layer = QgsProcessingUtils.mapLayerFromString(dest, context)
         if layer is None:
@@ -1586,7 +1587,7 @@ def _style_hfun_raster(dest, context, feedback):
         renderer.setClassificationMin(vmin)
         renderer.setClassificationMax(vmax)
         renderer.createShader(
-            ramp, QgsColorRampShader.Interpolated, QgsColorRampShader.Continuous)
+            ramp, QgsColorRampShader.Type.Interpolated, QgsColorRampShader.ClassificationMode.Continuous)
 
         layer.setRenderer(renderer)
         layer.triggerRepaint()
@@ -1683,7 +1684,7 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
             self.MESH, "Mesh layer (from stage 4)"))
         _num(self, self.ZLIM, "Open boundary depth threshold (m)", 0.0, -1e4, 1e5)
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, "5 - Boundary conditions", QgsProcessing.TypeVectorPoint))
+            self.OUTPUT, "5 - Boundary conditions", QgsProcessing.SourceType.TypeVectorPoint))
 
     def processAlgorithm(self, parameters, context, feedback):
         _require_deps()
@@ -1712,7 +1713,7 @@ class GenerateBoundaryConditionsAlgorithm(_BaseAlg):
         fields.append(QgsField("btype", QVariant.String))
         fields.append(QgsField("depth", QVariant.Double))
         sink, dest = self.parameterAsSink(
-            parameters, self.OUTPUT, context, fields, QgsWkbTypes.Point, crs)
+            parameters, self.OUTPUT, context, fields, QgsWkbTypes.Type.Point, crs)
 
         fid = 0
         for loop_id, loop in enumerate(loops):
@@ -1828,7 +1829,7 @@ class ExportUgridBoundaryAlgorithm(_ExportBase):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.BOUNDARY, "Boundary conditions (from stage 5)",
-            [QgsProcessing.TypeVectorPoint, QgsProcessing.TypeVectorLine]))
+            [QgsProcessing.SourceType.TypeVectorPoint, QgsProcessing.SourceType.TypeVectorLine]))
         self.addParameter(QgsProcessingParameterBoolean(
             self.WRITE_BC,
             "Also write .bc / .ext (Riemann boundary condition)",
@@ -1903,7 +1904,7 @@ class ExportGrdAlgorithm(_ExportBase):
             self.MESH, "Mesh layer (from stage 4)"))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.BOUNDARY, "Boundary conditions (from stage 5)",
-            [QgsProcessing.TypeVectorPoint, QgsProcessing.TypeVectorLine]))
+            [QgsProcessing.SourceType.TypeVectorPoint, QgsProcessing.SourceType.TypeVectorLine]))
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT, "Output grid (.grd)", fileFilter="ADCIRC grid (*.grd)"))
 
@@ -1984,7 +1985,7 @@ class GenerateMeshAlgorithm(_BaseAlg):
             self.RASTER, "Bathymetry raster (elevation, positive up)"))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.DETAIL, "Detail region (optional, polygons)",
-            [QgsProcessing.TypeVectorPolygon], optional=True))
+            [QgsProcessing.SourceType.TypeVectorPolygon], optional=True))
         _num(self, self.COAST_ZMAX, "Coastline level / wet threshold (m)", 0.0, -1e4, 1e4)
         self.addParameter(QgsProcessingParameterBoolean(
             self.KEEP_LARGEST, "Keep only the largest water region",

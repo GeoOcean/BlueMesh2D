@@ -6,6 +6,8 @@ are missing the plugin loads "empty" and shows an install dialog instead of
 crashing QGIS's plugin loader with a raw traceback.
 """
 
+import contextlib
+
 from qgis.core import QgsApplication
 
 from .deps_installer import (
@@ -50,10 +52,10 @@ class BlueMesh2DPlugin:
                    "dependencies, then restart QGIS.")
             parent = self._main_window()
             if parent is not None:
-                try:
+                # the message bar is cosmetic here: the dialog below is what
+                # matters, so a failure to post the banner is not worth caring
+                with contextlib.suppress(Exception):
                     self.iface.messageBar().pushWarning("BlueMesh2D", msg)
-                except Exception:
-                    pass
                 # defer until QGIS finishes starting up: opening the modal
                 # dialog inside the plugin-load phase blocks startup and
                 # keeps QGIS's busy cursor spinning over the dialog
