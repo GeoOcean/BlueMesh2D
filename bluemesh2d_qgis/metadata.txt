@@ -1,17 +1,31 @@
 [general]
 name=BlueMesh2D
-qgisMinimumVersion=3.22
+qgisMinimumVersion=3.34
 description=Generate unstructured triangular meshes from bathymetry rasters (BlueMesh2D)
-about=Wraps the BlueMesh2D meshing library as a QGIS Processing algorithm. Extracts a coastline/domain from a bathymetry GeoTIFF, builds a depth-based, gradient-limited element-size function (with an optional local detail region), refines and smooths a triangular mesh, samples bathymetry onto the nodes, and writes a UGRID NetCDF that loads as a QGIS mesh layer. Requires the bluemesh2d Python package, installed from PyPI on first run through Plugins > BlueMesh2D > Check / install dependencies (it brings numpy, scipy, shapely, rasterio, xarray, netCDF4 and triangle with it).
-version=0.1.1
+about=Wraps the BlueMesh2D meshing library as a QGIS Processing algorithm. Extracts a coastline/domain from a bathymetry GeoTIFF, builds a depth-based, gradient-limited element-size function (with an optional local detail region), refines and smooths a triangular mesh, samples bathymetry onto the nodes, and writes a UGRID NetCDF that loads as a QGIS mesh layer. No manual setup is needed for the external dependencies below: the plugin includes an installer, and on first load it detects what is missing and offers to install it with one click (Plugins > BlueMesh2D > Check / install dependencies). pip runs in QGIS's own interpreter; on Debian/Ubuntu system Python (PEP 668) the packages go into a plugin-managed virtual environment instead, leaving the system Python untouched. Installing bluemesh2d brings numpy, scipy, shapely, rasterio, matplotlib, netCDF4, xarray and triangle with it.
+version=0.1.2
 author=Geomatics and Ocean Engineering Group
 email=faugeree@unican.es
 tracker=https://github.com/GeoOcean/BlueMesh2D/issues
 repository=https://github.com/GeoOcean/BlueMesh2D
 homepage=https://github.com/GeoOcean/BlueMesh2D
+changelog=
+    0.1.2
+    - First public release.
+    - The meshing library is installed from PyPI (bluemesh2d) instead of being
+      bundled with the plugin: one dependency to install, and library fixes
+      reach users without a plugin update.
+    - One-click dependency installer: detects what is missing on load and
+      installs it into QGIS's own Python, or into a plugin-managed virtual
+      environment on PEP 668 systems (Debian/Ubuntu).
+    - Qt6-compatible scoped enums throughout; requires QGIS 3.34 or newer.
+    0.1.0
+    - Initial release: 6-stage Processing workflow from bathymetry raster to
+      UGRID NetCDF, plus an all-in-one algorithm.
 category=Analysis
 icon=icon.png
-experimental=True
+external_deps=bluemesh2d>=0.1.1,pyproj
+experimental=False
 deprecated=False
 hasProcessingProvider=yes
 tags=mesh,bathymetry,ocean,unstructured,ugrid,delft3d,adcirc,triangulation

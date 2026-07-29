@@ -12,18 +12,18 @@ import: the pyproj/libproj load order, and a headless matplotlib backend.
 
 from __future__ import annotations
 
+import contextlib
+
 # pyproj must load BEFORE any pip rasterio wheel brings its own copy of
 # libproj into the process: the reverse order makes pyproj misbehave with
 # "TypeError: expected bytes, str found" (see the pyproj FAQ on mixing
-# PROJ versions). Harmless when pyproj is missing -- the dependency dialog
-# handles that case.
-try:
+# PROJ versions). Harmless when pyproj is missing or unusable -- the
+# dependency dialog handles that case.
+with contextlib.suppress(Exception):
     import pyproj  # noqa: E402
     # importing is not enough: pyproj loads libproj lazily at the first CRS
     # creation, so force it NOW, before rasterio's copy enters the process
     pyproj.CRS.from_epsg(4326)
-except Exception:
-    pass
 
 import matplotlib  # noqa: E402
 matplotlib.use("Agg", force=True)  # must precede any bluemesh2d import (getiso)

@@ -225,6 +225,12 @@ captures the mesher's stdout into the log.
 
 ## Notes
 
+- Enums are written in the **scoped** Qt6 form
+  (`QgsProcessing.SourceType.TypeVectorPolygon`, not
+  `QgsProcessing.TypeVectorPolygon`) — required by the plugin repository's
+  Qt6-compatibility check, and the reason `qgisMinimumVersion` is 3.34: older
+  releases do not expose every enum under its scope name. Verified against
+  QGIS 3.34 LTR (PyQt5); the scoped and unscoped values are identical.
 - To build the zip for the QGIS plugin repository, from the repo root:
   ```
   zip -r bluemesh2d_qgis.zip bluemesh2d_qgis -x '*__pycache__*' '*.pyc'
