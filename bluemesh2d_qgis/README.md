@@ -193,6 +193,8 @@ different one. The checkbox never appears in a plugin installed from a zip.
 bluemesh2d_qgis/
 ├── __init__.py        classFactory (QGIS entry point)
 ├── metadata.txt       plugin metadata (hasProcessingProvider=yes)
+├── LICENSE            GPL-3.0-only (copy of the repository LICENSE;
+│                      the QGIS plugin repository requires it in the zip)
 ├── plugin.py          registers the Processing provider
 ├── provider.py        BlueMesh2DProvider
 ├── algorithm.py       Processing algorithms
@@ -223,6 +225,13 @@ captures the mesher's stdout into the log.
 
 ## Notes
 
+- To build the zip for the QGIS plugin repository, from the repo root:
+  ```
+  zip -r bluemesh2d_qgis.zip bluemesh2d_qgis -x '*__pycache__*' '*.pyc'
+  ```
+  The upload validator requires `metadata.txt` and `LICENSE` inside the
+  plugin folder — both are tracked here, so nothing has to be copied in
+  first.
 - The plugin and the library version independently: `metadata.txt` carries the
   plugin version, `MIN_VERSION` in `deps_installer.py` is the oldest
   `bluemesh2d` release it works against. Bump the latter when an algorithm
