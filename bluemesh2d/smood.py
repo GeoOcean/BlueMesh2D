@@ -28,6 +28,10 @@ def _ortho_merge_pipeline(vert, conn, tria, tnum, opts, fixed=None):
     # movement instead of merging triangle pairs into quads.
     merge_small_links = bool(opts.get("merge_small_links", False))
 
+    # Last-resort merge for the elements triangles-only recovery cannot fix.
+    recovery_merge = bool(opts.get("recovery_merge_small_links", True))
+    recovery_merge_from = int(opts.get("recovery_merge_from_iter", 2))
+
     do_log = not np.isinf(opts.get("disp", 4))
 
     # Initial snapshot (triangle proxy: 1 mixed-face row per input triangle).
@@ -98,6 +102,8 @@ def _ortho_merge_pipeline(vert, conn, tria, tnum, opts, fixed=None):
         verbose=False,
         jsferic=jsferic,
         merge_small_links=merge_small_links,
+        recovery_merge_small_links=recovery_merge,
+        recovery_merge_from_iter=recovery_merge_from,
         fixed=fixed,
     )
 
@@ -309,6 +315,10 @@ def smood(
         - ``preserve_merged_quads`` : bool, default ``False`` — keep quad faces
         - ``spherical`` : bool, default ``False`` — lon/lat vs. planar geometry
         - ``merge_small_links`` : bool, default ``False`` — merge vs. flip-only mode
+        - ``recovery_merge_small_links`` : bool, default ``True`` — in flip-only
+          mode, merge the elements recovery cannot fix instead of failing
+        - ``recovery_merge_from_iter`` : int, default ``2`` — recovery cycle
+          (``recovery=N`` in the log) the last-resort merge starts at
         - ``disp`` : int or float, default ``4`` — progress interval; ``np.inf`` for quiet
     hfun : callable, optional
         Mesh-size function (reserved for future use).
@@ -559,6 +569,27 @@ def makeopt_smood(opts=None):
         if opts["outer_stagnation_break"] < 0:
             raise ValueError(
                 "smood:invalidOptionValues - outer_stagnation_break must be >= 0."
+            )
+
+    # Last-resort merge during recovery (flip-only mode) + the recovery cycle
+    # it starts at, matching the `recovery=N` rows of the progress table.
+    if "recovery_merge_small_links" not in opts:
+        opts["recovery_merge_small_links"] = True
+    else:
+        if not isinstance(opts["recovery_merge_small_links"], bool):
+            raise TypeError(
+                "smood:incorrectInputClass - recovery_merge_small_links must be bool."
+            )
+
+    if "recovery_merge_from_iter" not in opts:
+        opts["recovery_merge_from_iter"] = 2
+    else:
+        if not isinstance(opts["recovery_merge_from_iter"], (int, float)):
+            raise TypeError("smood:incorrectInputClass - Incorrect input class.")
+        opts["recovery_merge_from_iter"] = int(opts["recovery_merge_from_iter"])
+        if opts["recovery_merge_from_iter"] < 0:
+            raise ValueError(
+                "smood:invalidOptionValues - recovery_merge_from_iter must be >= 0."
             )
 
     if "adaptive_recovery" not in opts:
