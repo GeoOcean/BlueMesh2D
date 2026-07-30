@@ -209,3 +209,6 @@ __marimo__/
 # Data Files
 *.nc
 *.grd
+
+# Written by setuptools-scm at build time (see pyproject.toml: version_file)
+bluemesh2d/_version.py
