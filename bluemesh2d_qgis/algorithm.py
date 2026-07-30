@@ -1252,6 +1252,8 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
     DO_SMOOTH = "DO_SMOOTH"
     DO_SMOOD = "DO_SMOOD"
     SMOOD_MERGE = "SMOOD_MERGE"
+    SMOOD_REC_MERGE = "SMOOD_REC_MERGE"
+    SMOOD_REC_MERGE_FROM = "SMOOD_REC_MERGE_FROM"
     INTERP_ORDER = "INTERP_ORDER"
     INVERT_Z = "INVERT_Z"
     NODATA_VALUE = "NODATA_VALUE"
@@ -1313,6 +1315,14 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
             "smood: merge small links (only if triangle-only smood is not "
             "enough to remove the remaining small flow links)",
             defaultValue=False))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.SMOOD_REC_MERGE,
+            "smood: merge the remaining problematic elements during recovery "
+            "(instead of failing when triangle-only recovery stalls)",
+            defaultValue=True))
+        _num(self, self.SMOOD_REC_MERGE_FROM,
+             "smood: recovery step the merge starts at (0 = first recovery "
+             "cycle)", 2, 0, 1000, integer=True, advanced=True)
         self.addParameter(QgsProcessingParameterEnum(
             self.INTERP_ORDER, "Bathymetry interpolation",
             options=self._INTERP_OPTS, defaultValue=2))
@@ -1390,6 +1400,8 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
                 do_smooth=self.parameterAsBool(parameters, self.DO_SMOOTH, context),
                 do_smood=self.parameterAsBool(parameters, self.DO_SMOOD, context),
                 smood_merge_small_links=self.parameterAsBool(parameters, self.SMOOD_MERGE, context),
+                smood_recovery_merge=self.parameterAsBool(parameters, self.SMOOD_REC_MERGE, context),
+                smood_recovery_merge_from=self.parameterAsInt(parameters, self.SMOOD_REC_MERGE_FROM, context),
                 fixed_points=fixed_points,
                 feedback=fb)
             interp_idx = self.parameterAsEnum(parameters, self.INTERP_ORDER, context)
@@ -1957,6 +1969,8 @@ class GenerateMeshAlgorithm(_BaseAlg):
     DO_SMOOTH = "DO_SMOOTH"
     DO_SMOOD = "DO_SMOOD"
     SMOOD_MERGE = "SMOOD_MERGE"
+    SMOOD_REC_MERGE = "SMOOD_REC_MERGE"
+    SMOOD_REC_MERGE_FROM = "SMOOD_REC_MERGE_FROM"
     INTERP_ORDER = "INTERP_ORDER"
     OUTPUT = "OUTPUT"
 
@@ -2010,6 +2024,14 @@ class GenerateMeshAlgorithm(_BaseAlg):
             "smood: merge small links (only if triangle-only smood is not "
             "enough to remove the remaining small flow links)",
             defaultValue=False))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.SMOOD_REC_MERGE,
+            "smood: merge the remaining problematic elements during recovery "
+            "(instead of failing when triangle-only recovery stalls)",
+            defaultValue=True))
+        _num(self, self.SMOOD_REC_MERGE_FROM,
+             "smood: recovery step the merge starts at (0 = first recovery "
+             "cycle)", 2, 0, 1000, integer=True, advanced=True)
         self.addParameter(QgsProcessingParameterEnum(
             self.INTERP_ORDER, "Bathymetry interpolation",
             options=self._INTERP_OPTS, defaultValue=2))
@@ -2051,6 +2073,8 @@ class GenerateMeshAlgorithm(_BaseAlg):
             do_smooth=self.parameterAsBool(parameters, self.DO_SMOOTH, context),
             do_smood=self.parameterAsBool(parameters, self.DO_SMOOD, context),
             smood_merge_small_links=self.parameterAsBool(parameters, self.SMOOD_MERGE, context),
+            smood_recovery_merge=self.parameterAsBool(parameters, self.SMOOD_REC_MERGE, context),
+            smood_recovery_merge_from=self.parameterAsInt(parameters, self.SMOOD_REC_MERGE_FROM, context),
             interp_order=self._INTERP_VALS[interp_idx],
         )
 

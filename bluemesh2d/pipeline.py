@@ -133,6 +133,11 @@ class MeshConfig:
     smood_merge_small_links : bool
         Enable small-link merging inside smood, see :func:`mesh_pslg`.
         Default ``False``.
+    smood_recovery_merge : bool
+        Merge only the elements smood's recovery cannot fix, see
+        :func:`mesh_pslg`. Default ``True``.
+    smood_recovery_merge_from : int
+        Recovery cycle the last-resort merge starts at. Default 2.
     interp_order : int
         Bathymetry sampling order (0=nearest, 1=bilinear, 3=bicubic).
         Default 3.
@@ -161,6 +166,8 @@ class MeshConfig:
     do_smooth: bool = True
     do_smood: bool = False
     smood_merge_small_links: bool = False
+    smood_recovery_merge: bool = True
+    smood_recovery_merge_from: int = 2
 
     interp_order: int = 3            # bathy sampling: 0=nearest,1=bilinear,3=bicubic
 
@@ -262,6 +269,8 @@ def generate_mesh(config: MeshConfig, feedback=None) -> MeshResult:
                            do_smooth=config.do_smooth,
                            do_smood=config.do_smood,
                            smood_merge_small_links=config.smood_merge_small_links,
+                           smood_recovery_merge=config.smood_recovery_merge,
+                           smood_recovery_merge_from=config.smood_recovery_merge_from,
                            feedback=_SubProgress(feedback, 55, 88))
 
     feedback.setProgress(88)

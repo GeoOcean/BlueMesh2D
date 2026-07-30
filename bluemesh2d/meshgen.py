@@ -72,6 +72,7 @@ def _locate_fixed(vert, fixed_points, feedback, tol=1e-6):
 
 def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
               do_smood=False, smood_merge_small_links=False,
+              smood_recovery_merge=True, smood_recovery_merge_from=2,
               fixed_points=None, feedback=None):
     """Refine a PSLG, then optionally smooth and/or smood it.
 
@@ -96,6 +97,17 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
         triangles whose circumcenters are too close are merged, then
         re-split). Use only when the default triangle-only smood cannot
         remove the remaining small flow links. Default is ``False``.
+    smood_recovery_merge : bool, optional
+        Merge only the elements smood's recovery cycles cannot fix, instead of
+        failing with "mesh still violates dual criteria". Triangle-only
+        recovery stagnates when the last small flow links sit on nodes it may
+        not move (fixed points, boundary vertices); this lets the merge step
+        clear exactly those. Default is ``True``.
+    smood_recovery_merge_from : int, optional
+        Recovery cycle the last-resort merge starts at, matching the
+        ``recovery=N`` rows of smood's progress table: the default ``2`` gives
+        the triangle-only pass two attempts first, ``0`` merges immediately.
+        Ignored unless `smood_recovery_merge` is ``True``.
     fixed_points : ndarray of shape (K, 2), optional
         XY coordinates (working CRS) of points that must appear as mesh
         nodes at exactly these positions: they are inserted before
@@ -185,6 +197,12 @@ def mesh_pslg(node, edge, hfuns, kind="delaunay", do_smooth=True,
         if smood_merge_small_links:
             feedback.pushInfo("smood: small-link merging enabled")
             smood_opts["merge_small_links"] = True
+        if smood_recovery_merge:
+            smood_opts["recovery_merge_small_links"] = True
+            smood_opts["recovery_merge_from_iter"] = int(smood_recovery_merge_from)
+            feedback.pushInfo(
+                "smood: recovery merging enabled (from recovery="
+                f"{int(smood_recovery_merge_from)})")
         try:
             with contextlib.redirect_stdout(_LogWriter(feedback)):
                 vert, etri, tria, tnum = smood(vert, etri, tria, tnum, smood_opts,

@@ -1,9 +1,10 @@
 # BlueMesh2D — QGIS plugin
 
-A self-contained QGIS **Processing** plugin that generates an unstructured
-triangular mesh from a bathymetry GeoTIFF, wrapping a bundled copy of the
-[BlueMesh2D](https://github.com/GeoOcean/BlueMesh2D) library. The output is a
-UGRID NetCDF that loads directly as a QGIS **mesh layer**.
+A QGIS **Processing** plugin that generates an unstructured triangular mesh
+from a bathymetry GeoTIFF, wrapping the
+[BlueMesh2D](https://github.com/GeoOcean/BlueMesh2D) library (installed from
+PyPI on first run, see below). The output is a UGRID NetCDF that loads directly
+as a QGIS **mesh layer**.
 
 ## About BlueMesh2D
 
@@ -63,7 +64,7 @@ ordinary (temporary or saved) QGIS layer you can inspect before the next step:
 | **1 – Extract water polygon** | bathy raster; coastline level; optional **deep level** (keeps the band `deep < z ≤ coast`, e.g. water shallower than 300 m); optional **extent polygon** (clips the raster *before* extraction — much faster; buffer then ignored); buffer factor (default −0.05) | water polygon layer |
 | **2 – Build element-size raster (hfun)** *(folder)* | one algorithm **per sizing method** (pick the algorithm, see only its parameters): **2a** depth polynomial `a·d²+b·d`; **2b** wavelength `L(T,d)/N` (Hunt 1979, `hfun_wavenumhunt`); **2c** custom Python (`d`,`x`,`y`,`np`). All share: optional **Water polygon (stage 1)** to limit computation to that area + buffer (much faster than the whole raster), detail polygons, min/max/detail size, gradient and **buffer** (m, −1 = automatic) | GeoTIFF, pixel = element size (m) |
 | **3 – Resample boundary to element size** | water polygon (1), hfun raster (2) | boundary **edges** line layer, styled with visible vertex markers (editable) |
-| **4 – Generate mesh from boundary** | **edges layer (3) — editable: move/delete/add segments first**, hfun raster (2), bathy raster; kind = delaunay/delfront; smooth; optional **smood** (+ *merge small links*, only if triangle-only smood can't remove the last small flow links) | UGRID NetCDF → mesh layer |
+| **4 – Generate mesh from boundary** | **edges layer (3) — editable: move/delete/add segments first**, hfun raster (2), bathy raster; kind = delaunay/delfront; smooth; optional **smood** (+ *merge small links*, only if triangle-only smood can't remove the last small flow links; + *merge the remaining problematic elements during recovery*, see below) | UGRID NetCDF → mesh layer |
 | **5 – Generate boundary conditions** | mesh layer (4); depth threshold (default 20 m) | one **line layer** with a `btype` attribute — **open** / **closed** / **island** — styled by type with visible vertex dots, **editable** (move vertices, or change `btype` to reclassify a segment) |
 | **6 – Export** *(folder)* — **6a** plain UGRID, **6b** UGRID + open BC, **6c** ADCIRC `.grd` | **6a** (default): mesh layer (4) only → `.nc`, no boundary files, no boundary layer needed. **6b**: mesh (4) **+ boundary conditions (5, required)** → `.nc` and, from the `open` features, `Boundary01.pli` / `Riemann.bc` / `FlowFM_bnd.ext`. **6c**: mesh (4) + boundary conditions (5, required) → `.grd` with open/land loops (`open`→open, `closed`+`island`→land), snapping each boundary vertex back to the nearest mesh node so stage-5 edits are honoured | `.nc` / `.nc` + Delft3D-FM BC / `.grd` |
 
@@ -80,6 +81,36 @@ QGIS's Processing toolbox sorts grouped and ungrouped algorithms in two
 separate buckets rather than one merged alphabetical list, so giving every
 step its own group is what keeps them in numeric order 1→6 instead of the
 folders (2, 6) drifting away from the single algorithms.
+
+### When smood fails: "mesh still violates dual criteria"
+
+smood accepts a mesh only when **both** criteria hold: `max|cosφ|` under the
+orthogonality threshold (0.49) **and** zero small flow links. It prints a
+progress table per cycle — `MAX|COS(PHI)|`, `N_SMALL`, `N_ZONES` and
+`N_MERGED` — first the `outer=N` cycles, then `recovery=N` cycles that
+re-smooth an ever-widening neighbourhood around whatever is left.
+
+If the numbers stop moving and the run ends in an error, read the two metric
+columns: they say which criterion is blocking. `MAX|COS(PHI)|` at, say,
+0.4898 already passes — a stuck `N_SMALL` of 1 or 2 is then the whole problem.
+Small flow links are removed by the **merge** step, and in the default
+triangle-only mode that step is off, so the orthogonalizer has to clear them by
+moving nodes and flipping edges alone. When the last ones sit on nodes it may
+not move (fixed points, boundary vertices), no amount of extra iterations will
+help — which is what a table of identical `recovery=N` rows means.
+
+This is handled by **"smood: merge the remaining problematic elements during
+recovery"**, which is **on by default**: from recovery cycle 2 onwards the
+recovery cycles also run the merge step, so those few elements are merged
+instead of failing the run, and `N_MERGED` shows it happening. The mesh stays
+triangle-only — each merged quad is re-split on its other diagonal, and that
+re-split is what removes the small link.
+
+The advanced **"recovery step the merge starts at"** decides when it kicks in:
+the default `2` lets the triangle-only pass try twice before merging (it often
+succeeds on its own, as `recovery=0` and `recovery=1` in the table above), `0`
+merges from the very first recovery cycle. Untick the option to get the old
+behaviour: triangle-only recovery that fails rather than merging anything.
 
 **CRS handling**: vector layers are always delivered in the input tif's CRS.
 If the tif is *geographic* (e.g. EPSG:4326), a local metric UTM CRS is built

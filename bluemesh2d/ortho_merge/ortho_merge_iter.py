@@ -312,6 +312,8 @@ def ortho_merge_iterate_dataset(
     verbose: bool = True,
     jsferic: int = 1,
     merge_small_links: bool = True,
+    recovery_merge_small_links: bool = True,
+    recovery_merge_from_iter: int = 2,
     fixed: Optional[np.ndarray] = None,
 ) -> tuple:
     """Iteratively orthogonalize and merge circumcenters on a UGRID dataset.
@@ -358,6 +360,21 @@ def ortho_merge_iterate_dataset(
         ``1`` for spherical lon/lat; ``0`` for planar coordinates.
     merge_small_links : bool, optional
         If ``False``, keep pure triangles (no quad merge step).
+    recovery_merge_small_links : bool, optional
+        Last-resort merge during recovery when `merge_small_links` is
+        ``False``. Enabled by default. Triangles-only orthogonalization can leave a handful of
+        small flow links on nodes it may not move (fixed points, boundary
+        vertices); smoothing then stagnates and the dual criteria can never be
+        met. With this enabled, recovery cycles from `recovery_merge_from_iter`
+        onwards also run the merge step, so those few remaining elements are
+        merged instead of blocking the run. The mesh stays triangle-only on
+        output unless ``preserve_merged_quads`` is set: each merged quad is
+        re-split on its other diagonal, which is what removes the small link.
+    recovery_merge_from_iter : int, optional
+        Recovery cycle the merge is switched on at, matching the ``recovery=N``
+        labels in the progress table: the default ``2`` gives the pure
+        triangles-only pass two chances first, ``0`` merges from the very first
+        recovery cycle. Ignored when `recovery_merge_small_links` is ``False``.
     fixed : array_like of int, optional
         Node indices to hold fixed (never displaced). Node numbering is
         preserved by every pipeline step, so the indices stay valid.
@@ -393,8 +410,15 @@ def ortho_merge_iterate_dataset(
         buffer_layers_override: Optional[int] = None,
         max_global_iter_override: Optional[int] = None,
         smooth_iter_override: Optional[int] = None,
+        merge_override: Optional[bool] = None,
     ):
-        """One ortho (dual-consistent tris of mixed faces) + merge_circumcenters. Returns updated ds."""
+        """One ortho (dual-consistent tris of mixed faces) + merge_circumcenters. Returns updated ds.
+
+        ``merge_override`` turns the merge step on for this cycle only, without
+        changing how the orthogonalizer is tuned: the recovery merge runs
+        *after* a triangles-only ortho pass has done its best, so merging only
+        has to deal with the elements smoothing could not fix.
+        """
         ds_before_outer = ds_in.copy(deep=True)
         node_x = np.asarray(ds_in["mesh2d_node_x"].values, dtype=np.float64)
         node_y = np.asarray(ds_in["mesh2d_node_y"].values, dtype=np.float64)
@@ -419,8 +443,14 @@ def ortho_merge_iterate_dataset(
             else max_global_iter_override
         )
         si = int(smooth_iter if smooth_iter_override is None else smooth_iter_override)
+        do_merge = bool(merge_small_links if merge_override is None else merge_override)
+        # A recovery merge leaves quads behind, and a quad's internal diagonal
+        # is not a flow link: from then on the small-link logic must be left to
+        # merge, exactly as in permanent merge mode, or the orthogonalizer
+        # chases diagonals that merge just created.
+        mixed_faces = any(len(f) >= 4 for f in faces)
 
-        if merge_small_links:
+        if merge_small_links or mixed_faces:
             # Small links are removed by merge_circumcenters below; keep the
             # orthogonalizer focused on |cosphi| only.
             ortho_smalllink_trsh = (
@@ -441,7 +471,7 @@ def ortho_merge_iterate_dataset(
             enable_edge_flips=enable_edge_flips,
             verbose=verbose,
             jsferic=jsferic,
-            smalllink_priority=not merge_small_links,
+            smalllink_priority=not (merge_small_links or mixed_faces),
             fixed=fixed,
         )
 
@@ -455,7 +485,7 @@ def ortho_merge_iterate_dataset(
         ugrid_arrays = build_ugrid_arrays_mixed(NODE, faces_after_ortho)
         ds_after_ortho = _rebuild_ds_from_form(ds_in, ugrid_arrays)
 
-        if not merge_small_links:
+        if not do_merge:
             return ds_after_ortho, ortho_res, 0, ds_before_outer
 
         nfaces_before = int(
@@ -592,12 +622,24 @@ def ortho_merge_iterate_dataset(
                 mgi_rec = int(max_global_iter)
                 si_rec = int(smooth_iter)
 
+            # Last resort: from `recovery_merge_from_iter` on, let the merge
+            # step clean up what the triangles-only ortho pass keeps failing to
+            # fix. `None` leaves the global `merge_small_links` in charge.
+            merge_now = (
+                True
+                if (
+                    bool(recovery_merge_small_links)
+                    and r >= int(recovery_merge_from_iter)
+                )
+                else None
+            )
             ds_cur, ortho_res, merged_this_iter, ds_before_outer = (
                 _run_ortho_merge_cycle(
                     ds_cur,
                     buffer_layers_override=bl_rec,
                     max_global_iter_override=mgi_rec,
                     smooth_iter_override=si_rec,
+                    merge_override=merge_now,
                 )
             )
             # Recovery: no guardrail revert (keep trying); always log cycle.
@@ -640,13 +682,32 @@ def ortho_merge_iterate_dataset(
                     prev_metric_key = key
 
         if not ok:
+            hint = (
+                "Increase max_recovery_iterations / outer_iter_max, relax "
+                "thresholds, or improve the initial mesh."
+            )
+            if stall_need > 0 and stall >= stall_need:
+                # The metrics were bit-identical for `stall_need` cycles, so
+                # more iterations provably change nothing: point at the knobs
+                # that actually can.
+                hint = (
+                    f"The last {stall} recovery cycle(s) left the metrics "
+                    "unchanged, so more iterations will not help."
+                )
+                if not merge_small_links and not recovery_merge_small_links:
+                    hint += (
+                        " Small flow links are removed by the merge step, which"
+                        " is disabled: enable recovery_merge_small_links (merge"
+                        " only the few elements recovery cannot fix) or"
+                        " merge_small_links (merge throughout)."
+                    )
+                else:
+                    hint += " Relax the thresholds or improve the initial mesh."
             raise RuntimeError(
                 "ortho_merge_iterate_dataset: mesh still violates dual criteria after "
                 f"{int(outer_iter_max)} main cycle(s) and {r} recovery cycle(s). "
                 f"Required: max|cosφ| <= {cosphi_threshold} and n_small_flow_links == 0 "
-                f"(triangle proxy). Got max|cosφ|={max_c:.6f}, n_small={n_s}. "
-                "Increase max_recovery_iterations / outer_iter_max, relax thresholds, "
-                "or improve the initial mesh."
+                f"(triangle proxy). Got max|cosφ|={max_c:.6f}, n_small={n_s}. " + hint
             )
 
     return ds_cur, stats
@@ -665,9 +726,9 @@ def print_stats(
         If ``True``, print the column header first.
     """
     if print_header:
-        print(" -------------------------------------------------------")
-        print("      |STATE.|      |MAX|COS(PHI)| |N_SMALL| |N_ZONES|")
-        print(" -------------------------------------------------------")
+        print(" ------------------------------------------------------------------")
+        print("      |STATE.|      |MAX|COS(PHI)| |N_SMALL| |N_ZONES| |N_MERGED|")
+        print(" ------------------------------------------------------------------")
 
     for s in stats:
         if getattr(s, "recovery", False):
@@ -682,7 +743,8 @@ def print_stats(
                 head = f"outer={s.outer_iter}"
 
         print(
-            f"    {head:<11}{s.max_cosphi:>13.6f}{int(s.n_small_flow_links):>14d}{int(s.n_zones_orthogonalized):>11d}",
+            f"    {head:<11}{s.max_cosphi:>13.6f}{int(s.n_small_flow_links):>14d}"
+            f"{int(s.n_zones_orthogonalized):>11d}{int(s.merged_this_iter):>11d}",
             flush=True,
         )
 
@@ -713,6 +775,8 @@ def ortho_merge_iterate_tria(
     verbose: bool = True,
     jsferic: int = 1,
     merge_small_links: bool = True,
+    recovery_merge_small_links: bool = True,
+    recovery_merge_from_iter: int = 2,
     fixed: Optional[np.ndarray] = None,
 ) -> tuple:
     """Run the ortho+merge pipeline starting from a pure triangle mesh.
@@ -730,7 +794,8 @@ def ortho_merge_iterate_tria(
     ortho_disable_smalllink_logic, require_both_criteria,
     max_recovery_iterations, recovery_stagnation_break, outer_stagnation_break,
     adaptive_recovery, recovery_buffer_growth, recovery_smooth_iter_growth,
-    recovery_global_iter_growth, on_state, verbose, jsferic, merge_small_links
+    recovery_global_iter_growth, on_state, verbose, jsferic, merge_small_links,
+    recovery_merge_small_links, recovery_merge_from_iter
         Same meaning as in :func:`ortho_merge_iterate_dataset`.
 
     Returns
@@ -790,6 +855,8 @@ def ortho_merge_iterate_tria(
         verbose=verbose,
         jsferic=jsferic,
         merge_small_links=merge_small_links,
+        recovery_merge_small_links=recovery_merge_small_links,
+        recovery_merge_from_iter=recovery_merge_from_iter,
         fixed=fixed,
     )
 
