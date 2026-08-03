@@ -29,7 +29,7 @@ It implements:
   boundary classification (open/land), and export to ADCIRC `.grd` /
   Delft3D-FM UGRID NetCDF.
 
-The algorithms are "probably-good": they guarantee termination, geometric and
+The algorithms are "provably-good": they guarantee termination, geometric and
 topological correctness, and worst-case element-quality bounds, while
 supporting user-defined mesh-size functions and multi-part domains. See the
 [BlueMesh2D repository](https://github.com/GeoOcean/BlueMesh2D) for the full
@@ -56,7 +56,7 @@ bathymetry.tif
 
 ## The algorithms (Processing Toolbox ▸ BlueMesh2D)
 
-The pipeline is available **split into four stages** — each result lands in an
+The pipeline is available **split into six stages** — each result lands in an
 ordinary (temporary or saved) QGIS layer you can inspect before the next step:
 
 | algorithm | inputs | outputs |
