@@ -24,7 +24,7 @@ import sys
 import sysconfig
 
 # Oldest bluemesh2d release this plugin version works against.
-MIN_VERSION = "0.1.1"
+MIN_VERSION = "0.1.4"
 
 # What pip installs. Everything the pipeline needs comes from bluemesh2d's own
 # dependency metadata, EXCEPT pyproj: the library imports it but does not
