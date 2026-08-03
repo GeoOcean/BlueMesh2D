@@ -129,6 +129,9 @@ The plugin is published on the QGIS plugin repository:
 2. The algorithms appear in the **Processing Toolbox** under
    *BlueMesh2D ▸ 1 - Extract water polygon* (and the following stages).
 
+A step-by-step tutorial is available as a PDF:
+[**Tuto_BlueMesh2D_Santander.pdf**](https://github.com/GeoOcean/BlueMesh2D/blob/develop/docs/Tuto_BlueMesh2D_Santander.pdf).
+
 <details>
 <summary>Installing from a checkout instead (development, or an unreleased version)</summary>
 

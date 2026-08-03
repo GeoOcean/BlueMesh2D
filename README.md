@@ -87,6 +87,11 @@ pip install -e .
 
 More examples available in [`BlueMath`](https://github.com/GeoOcean/BlueMath/tree/main/toolkit/mesh).
 
+#### Documentation
+
+A step-by-step tutorial covering the library and the QGIS workflow is available as a PDF:
+[**Tuto_BlueMesh2D_Santander.pdf**](https://github.com/GeoOcean/BlueMesh2D/blob/develop/docs/Tuto_BlueMesh2D_Santander.pdf).
+
 ### `QGIS Plugin`
 
 A **QGIS Processing plugin** exposes the raster-to-mesh part of `BlueMesh2D` as a
