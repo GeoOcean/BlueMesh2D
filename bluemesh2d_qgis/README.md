@@ -121,14 +121,28 @@ reprojection at all — and the output NetCDF carries metre units with a
 
 ## Install
 
+The plugin is published on the QGIS plugin repository:
+**<https://plugins.qgis.org/plugins/BlueMesh2D>**
+
+1. **Plugins ▸ Manage and Install Plugins ▸ All**, search for **BlueMesh2D**,
+   click *Install Plugin*.
+2. The algorithms appear in the **Processing Toolbox** under
+   *BlueMesh2D ▸ 1 - Extract water polygon* (and the following stages).
+
+<details>
+<summary>Installing from a checkout instead (development, or an unreleased version)</summary>
+
 1. Copy this whole `bluemesh2d_qgis/` folder into your QGIS plugins directory:
    - **Linux**: `~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/`
    - **Windows**: `%APPDATA%\QGIS\QGIS3\profiles\default\python\plugins\`
    - **macOS**: `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/`
+
+   A symlink works too, and is what enables the editable-install option
+   described under [Development](#development-working-from-a-checkout).
 2. Restart QGIS → **Plugins ▸ Manage and Install Plugins ▸ Installed** → enable
    **BlueMesh2D**.
-3. The algorithms appear in the **Processing Toolbox** under
-   *BlueMesh2D ▸ 1 - Extract water polygon* (and the following stages).
+
+</details>
 
 ### The BlueMesh2D library (important)
 
