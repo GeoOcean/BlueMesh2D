@@ -8,7 +8,7 @@ author=Geomatics and Ocean Engineering Group
 email=faugeree@unican.es
 tracker=https://github.com/GeoOcean/BlueMesh2D/issues
 repository=https://github.com/GeoOcean/BlueMesh2D
-homepage=https://github.com/GeoOcean/BlueMesh2D
+homepage=https://github.com/GeoOcean/BlueMesh2D/tree/develop/bluemesh2d_qgis
 changelog=
     0.1.2
     - First public release.
