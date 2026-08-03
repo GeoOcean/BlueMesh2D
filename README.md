@@ -18,21 +18,42 @@ Algorithms implemented in `BlueMesh2D` are "probably-good" - ensuring convergenc
 
 `BlueMesh2D` is a pure `Python` package, consisting of a core library + associated utilities:
 
-    BlueMesh2D::
-    ├── bluemesh2d              -- core BlueMesh2D library functions. See refine, smooth, tridemo etc.
-    ├── bluemesh2d/aabb_tree    -- support for fast spatial indexing, via tree-based data-structures.
-    ├── bluemesh2d/geom_util    -- geometry processing, repair, etc.
-    ├── bluemesh2d/geomesh_util -- mesh management, export, interpolation, etc.
-    ├── bluemesh2d/hfun_util    -- mesh-spacing definitions, limiters, etc.
-    ├── bluemesh2d/hjac_util    -- solver for Hamilton-Jacobi eqn's.
-    ├── bluemesh2d/mesh_ball    -- circumscribing balls, orthogonal balls etc.
-    ├── bluemesh2d/mesh_cost    -- mesh cost/quality functions, etc.
-    ├── bluemesh2d/mesh_file    -- mesh i/o via ASCII serialisation.
-    ├── bluemesh2d/mesh_util    -- meshing/triangulation utility functions.
-    ├── bluemesh2d/ortho_merge  -- mesh orthogonalisation & merging (Delft3D-FM).
-    ├── bluemesh2d/poly_data    -- polygon definitions for demo problems, etc.
-    └── bluemesh2d/poly_test    -- fast inclusion test for polygons.
+    BlueMesh2D:
+    ├── bluemesh2d            -- core BlueMesh2D library functions. See refine, smooth, tridemo etc.
+    │   ├── aabb_tree         -- support for fast spatial indexing, via tree-based data-structures.
+    │   ├── geom_util         -- geometry processing, repair, reprojection, etc.
+    │   ├── geomesh_util      -- mesh management, export, interpolation, etc.
+    │   ├── hfun_util         -- mesh-spacing definitions, limiters, etc.
+    │   ├── hjac_util         -- solver for Hamilton-Jacobi eqn's.
+    │   ├── mesh_ball         -- circumscribing balls, orthogonal balls etc.
+    │   ├── mesh_cost         -- mesh cost/quality functions, etc.
+    │   ├── mesh_file         -- mesh i/o via ASCII serialisation, UGRID/ADCIRC, boundary conditions.
+    │   ├── mesh_util         -- meshing/triangulation utility functions.
+    │   ├── ortho_merge       -- mesh orthogonalisation & merging (Delft3D-FM).
+    │   ├── poly_data         -- polygon definitions for demo problems, etc.
+    │   └── poly_test         -- fast inclusion test for polygons.
+    ├── bluemesh2d_qgis       -- QGIS Processing plugin wrapping the raster-to-mesh workflow.
+    │   ├── __init__.py       -- classFactory -- the entry point QGIS calls to load the plugin.
+    │   ├── metadata.txt      -- plugin metadata: version, external_deps, changelog.
+    │   ├── plugin.py         -- bootstrap: dependency gate, menu, provider registration.
+    │   ├── provider.py       -- BlueMesh2DProvider -- registers the algorithms with Processing.
+    │   ├── algorithm.py      -- the Processing algorithms: stages 1-6 plus the all-in-one run.
+    │   ├── deps_installer.py -- dependency check + guided pip install dialog.
+    │   ├── pipeline.py       -- seam to the library: headless facade, matplotlib/pyproj set-up.
+    │   ├── icon.png          -- toolbox icon.
+    │   ├── README.md         -- install and usage documentation for the plugin.
+    │   └── LICENSE           -- GPL-3.0, required for the QGIS plugin repository.
+    ├── tests                 -- pytest suite; tests/reference holds the golden meshes.
+    ├── docs                  -- tutorial material (Santander workshop).
+    └── assets                -- images used by the READMEs.
 
+On top of the meshing primitives, the top level of `bluemesh2d` also carries the
+staged bathymetry-to-mesh workflow the QGIS plugin drives: `pipeline` (the
+raster → water polygon → hfun → boundary → mesh → NetCDF orchestration, with
+`MeshConfig` / `generate_mesh`), `meshgen` (refine / smooth / smood for a given
+PSLG), `smood` (Delft3D-FM orthogonalisation), plus `dependencies` and
+`feedback` (optional-import checks and progress/cancellation plumbing, so the
+same code runs headless or inside QGIS).
 
 ### `Quickstart`
 
