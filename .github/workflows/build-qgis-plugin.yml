@@ -1,0 +1,64 @@
+name: Build QGIS Plugin Zip
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "qgis-v*"
+  workflow_dispatch:
+
+jobs:
+  build-qgis-plugin:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read plugin version from metadata.txt
+        id: meta
+        run: |
+          version=$(sed -n 's/^version=//p' bluemesh2d_qgis/metadata.txt | head -1 | tr -d '[:space:]')
+          if [ -z "$version" ]; then
+            echo "::error::no version= line in bluemesh2d_qgis/metadata.txt"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=bluemesh2d_qgis-$version.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugin zip
+        run: |
+          git archive --format=zip \
+            --prefix=bluemesh2d_qgis/ \
+            -o "${{ steps.meta.outputs.zip }}" \
+            HEAD:bluemesh2d_qgis
+
+      - name: Validate zip layout
+        run: |
+          python - <<'PY'
+          import zipfile
+          zf = zipfile.ZipFile("${{ steps.meta.outputs.zip }}")
+          names = zf.namelist()
+          roots = {n.split("/")[0] for n in names}
+          assert roots == {"bluemesh2d_qgis"}, f"expected one top-level dir, got {roots}"
+          for required in ("bluemesh2d_qgis/metadata.txt", "bluemesh2d_qgis/__init__.py"):
+              assert required in names, f"missing {required}"
+          assert not [n for n in names if "__pycache__" in n], "__pycache__ in zip"
+          src = zf.read("bluemesh2d_qgis/__init__.py").decode()
+          assert "def classFactory" in src, "no classFactory entry point"
+          print(f"OK: {len(names)} entries")
+          PY
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluemesh2d_qgis-${{ steps.meta.outputs.version }}
+          path: ${{ steps.meta.outputs.zip }}
+
+      - name: Attach to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.meta.outputs.zip }}
