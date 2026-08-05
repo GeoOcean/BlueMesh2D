@@ -6,7 +6,7 @@ are missing the plugin loads "empty" and shows an install dialog instead of
 crashing QGIS's plugin loader with a raw traceback.
 """
 
-import contextlib,nh ibpoyub08ubn'90i,
+import contextlib
 
 from qgis.core import QgsApplication
 
