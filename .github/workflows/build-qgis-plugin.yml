@@ -7,11 +7,18 @@ on:
       - "qgis-v*"
   workflow_dispatch:
 
+env:
+  PACKAGE_NAME: BlueMesh2D
+  SOURCE_DIR: bluemesh2d_qgis
+
 jobs:
   build-qgis-plugin:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      zip: ${{ steps.meta.outputs.zip }}
 
     steps:
       - name: Checkout Repository
@@ -20,41 +27,46 @@ jobs:
       - name: Read plugin version from metadata.txt
         id: meta
         run: |
-          version=$(sed -n 's/^version=//p' bluemesh2d_qgis/metadata.txt | head -1 | tr -d '[:space:]')
+          version=$(sed -n 's/^version=//p' "$SOURCE_DIR/metadata.txt" | head -1 | tr -d '[:space:]')
           if [ -z "$version" ]; then
-            echo "::error::no version= line in bluemesh2d_qgis/metadata.txt"
+            echo "::error::no version= line in $SOURCE_DIR/metadata.txt"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "zip=bluemesh2d_qgis-$version.zip" >> "$GITHUB_OUTPUT"
+          echo "zip=$PACKAGE_NAME-$version.zip" >> "$GITHUB_OUTPUT"
 
       - name: Build plugin zip
         run: |
           git archive --format=zip \
-            --prefix=bluemesh2d_qgis/ \
+            --prefix="$PACKAGE_NAME/" \
             -o "${{ steps.meta.outputs.zip }}" \
-            HEAD:bluemesh2d_qgis
+            "HEAD:$SOURCE_DIR"
 
       - name: Validate zip layout
+        env:
+          PLUGIN_ZIP: ${{ steps.meta.outputs.zip }}
         run: |
           python - <<'PY'
-          import zipfile
-          zf = zipfile.ZipFile("${{ steps.meta.outputs.zip }}")
+          import os, zipfile
+
+          package = os.environ["PACKAGE_NAME"]
+          zf = zipfile.ZipFile(os.environ["PLUGIN_ZIP"])
           names = zf.namelist()
+
           roots = {n.split("/")[0] for n in names}
-          assert roots == {"bluemesh2d_qgis"}, f"expected one top-level dir, got {roots}"
-          for required in ("bluemesh2d_qgis/metadata.txt", "bluemesh2d_qgis/__init__.py"):
+          assert roots == {package}, f"expected only {package}/ at the root, got {roots}"
+          for required in (f"{package}/metadata.txt", f"{package}/__init__.py"):
               assert required in names, f"missing {required}"
           assert not [n for n in names if "__pycache__" in n], "__pycache__ in zip"
-          src = zf.read("bluemesh2d_qgis/__init__.py").decode()
+          src = zf.read(f"{package}/__init__.py").decode()
           assert "def classFactory" in src, "no classFactory entry point"
-          print(f"OK: {len(names)} entries")
+          print(f"OK: {len(names)} entries under {package}/")
           PY
 
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bluemesh2d_qgis-${{ steps.meta.outputs.version }}
+          name: ${{ env.PACKAGE_NAME }}-${{ steps.meta.outputs.version }}
           path: ${{ steps.meta.outputs.zip }}
 
       - name: Attach to GitHub Release
@@ -62,3 +74,70 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.meta.outputs.zip }}
+
+  publish-qgis-plugin:
+    needs: build-qgis-plugin
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: qgis-plugin-repository
+
+    steps:
+      - name: Download plugin zip
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ needs.build-qgis-plugin.outputs.version }}
+
+      - name: Upload to plugins.qgis.org
+        env:
+          QGIS_PLUGIN_TOKEN: ${{ secrets.QGIS_PLUGIN_TOKEN }}
+          PLUGIN_ZIP: ${{ needs.build-qgis-plugin.outputs.zip }}
+        run: |
+          python - <<'PY'
+          import json, os, sys, urllib.error, urllib.request, uuid
+
+          package = os.environ["PACKAGE_NAME"]
+          zip_path = os.environ["PLUGIN_ZIP"]
+          token = os.environ["QGIS_PLUGIN_TOKEN"]
+          if not token:
+              sys.exit("::error::QGIS_PLUGIN_TOKEN secret is empty")
+
+          with open(zip_path, "rb") as handle:
+              payload = handle.read()
+
+          # Hand-rolled multipart: the field name must be "package", which is
+          # what PluginVersionForm on the server expects.
+          boundary = uuid.uuid4().hex
+          body = b"".join([
+              f'--{boundary}\r\n'.encode(),
+              f'Content-Disposition: form-data; name="package"; '
+              f'filename="{os.path.basename(zip_path)}"\r\n'.encode(),
+              b"Content-Type: application/zip\r\n\r\n",
+              payload,
+              f"\r\n--{boundary}--\r\n".encode(),
+          ])
+
+          request = urllib.request.Request(
+              f"https://plugins.qgis.org/plugins/api/{package}/version/add/",
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": f"multipart/form-data; boundary={boundary}",
+              },
+          )
+
+          try:
+              with urllib.request.urlopen(request) as response:
+                  result = json.loads(response.read().decode())
+          except urllib.error.HTTPError as err:
+              # 403 = token invalid/expired or not scoped to this plugin.
+              # 400 = validation error, most often "version already exists".
+              detail = err.read().decode(errors="replace")[:2000]
+              print(f"::error::plugins.qgis.org returned {err.code}: {detail}")
+              sys.exit(1)
+
+          print(f"Published {package} {result.get('version')} "
+                f"(version_id {result.get('version_id')})")
+          print("It stays unapproved until the security scan and review complete: "
+                f"https://plugins.qgis.org/plugins/{package}/")
+          PY
