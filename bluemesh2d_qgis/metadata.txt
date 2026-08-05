@@ -12,7 +12,7 @@ about=Wraps the BlueMesh2D meshing library as QGIS Processing algorithms: from a
     Each stage produces an ordinary QGIS layer, so every intermediate result can be inspected and hand-edited before the next step; an all-in-one algorithm is also available for a single-dialog run.
     Step-by-step tutorial (PDF): https://github.com/GeoOcean/BlueMesh2D/blob/develop/docs/Tuto_BlueMesh2D_Santander.pdf
     Dependencies need no manual setup. On first load the plugin detects what is missing and installs it in one click (Plugins ▸ BlueMesh2D ▸ Check / install dependencies). pip runs in QGIS's own interpreter; on Debian/Ubuntu system Python (PEP 668) the packages go into a plugin-managed virtual environment instead, leaving the system Python untouched. Installing bluemesh2d brings numpy, scipy, shapely, rasterio, matplotlib, netCDF4, xarray and triangle with it.
-version=0.1.3
+version=0.1.4
 author=Geomatics and Ocean Engineering Group
 email=faugeree@unican.es
 tracker=https://github.com/GeoOcean/BlueMesh2D/issues
