@@ -123,6 +123,10 @@ jobs:
               headers={
                   "Authorization": f"Bearer {token}",
                   "Content-Type": f"multipart/form-data; boundary={boundary}",
+                  # Cloudflare fronts plugins.qgis.org and rejects the default
+                  # "Python-urllib/3.x" agent with error 1010 before the
+                  # request ever reaches Django. Any named agent passes.
+                  "User-Agent": f"{package}-release/1.0 (+https://github.com/GeoOcean/BlueMesh2D)",
               },
           )
 
@@ -133,6 +137,9 @@ jobs:
               # 403 = token invalid/expired or not scoped to this plugin.
               # 400 = validation error, most often "version already exists".
               detail = err.read().decode(errors="replace")[:2000]
+              if "error code: 101" in detail:
+                  detail += " (Cloudflare, not QGIS: the request was blocked "
+                  detail += "before reaching the application -- check User-Agent)"
               print(f"::error::plugins.qgis.org returned {err.code}: {detail}")
               sys.exit(1)
 
