@@ -139,18 +139,29 @@ def latest_version(dist="bluemesh2d", timeout=PYPI_TIMEOUT, url=None):
     environment) and never raises: no network, a proxy, a timeout, an HTTP
     error or unexpected JSON all return None, which callers treat as "cannot
     tell" and skip the check.
+
+    Only ``https`` is opened. ``url`` exists so a caller can point at a
+    mirror, and an unrestricted urlopen would honour ``file://`` (reading a
+    local file) or ``ftp://`` as readily as a URL -- so the scheme is checked
+    rather than assumed, and anything else is refused like an unreachable
+    index.
     """
     import json
+    import urllib.parse
     import urllib.request
+
+    target = (url or PYPI_JSON_URL).format(dist=dist)
+    if urllib.parse.urlsplit(target).scheme != "https":
+        return None
 
     try:
         request = urllib.request.Request(
-            (url or PYPI_JSON_URL).format(dist=dist),
-            headers={"User-Agent": "BlueMesh2D-QGIS-plugin"},
-        )
-        # nosec B310 -- constant https URL, not user input
+            target, headers={"User-Agent": "BlueMesh2D-QGIS-plugin"})
+        # the scheme is validated above, so urlopen cannot be steered at
+        # file:// or ftp:// here
         with contextlib.closing(
-                urllib.request.urlopen(request, timeout=timeout)) as response:
+                urllib.request.urlopen(request, timeout=timeout)  # nosec B310
+        ) as response:
             version = json.load(response)["info"]["version"]
         return version.strip() or None
     except Exception:
