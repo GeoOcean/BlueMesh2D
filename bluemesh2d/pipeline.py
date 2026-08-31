@@ -119,6 +119,11 @@ class MeshConfig:
         Element-size floor and cap (m). Defaults 100.0 and 10000.0.
     max_gradient : float
         Maximum allowed size gradient (m/m). Default 0.1.
+    clip_hfun_to_domain : bool
+        Clip the size function to the stage-1 water polygon, so depths
+        outside it (land, excluded basins) never drive the element size
+        inside. Same meaning as ``clip_to_domain`` in
+        :func:`build_hfun_raster`. Default ``True``.
     min_angle_deg : float
         Minimum boundary angle (deg), see :func:`resample_boundary`.
         Default 25.0.
@@ -158,6 +163,7 @@ class MeshConfig:
     hmin: float = 100.0
     hmax: float = 10000.0
     max_gradient: float = 0.1
+    clip_hfun_to_domain: bool = True
 
     min_angle_deg: float = 25.0
     min_hole_vertices: int = 15
@@ -246,11 +252,23 @@ def generate_mesh(config: MeshConfig, feedback=None) -> MeshResult:
     detail_u = None
     if config.detail_geom is not None:
         detail_u = reproject_geometry(config.detail_geom, raster_crs, utm_crs)
+    clip_u = None
+    if config.clip_hfun_to_domain:
+        # widen by one gradient-limiting cell so boundary nodes, which sit
+        # exactly on the polygon edge, still count as inside
+        cs = max(max(poly.bounds[2] - poly.bounds[0],
+                     poly.bounds[3] - poly.bounds[1]) / 1200.0,
+                 config.hmin / 2.0)
+        clip_u = poly.buffer(cs)
+        feedback.pushInfo(
+            "Clipping the size function to the water polygon "
+            "(values outside do not affect the values inside).")
     hfun = _make_depth_hfun(
         depth_field, a=config.a, b=config.b,
         hmin=config.hmin, hmax=config.hmax,
         detail=detail_u,
-        detail_hmin=(config.detail_hmin if detail_u is not None else None))
+        detail_hmin=(config.detail_hmin if detail_u is not None else None),
+        domain=clip_u)
 
     feedback.pushInfo("Gradient-limiting the size function (this can take a moment) ...")
     feedback.setProgress(35)

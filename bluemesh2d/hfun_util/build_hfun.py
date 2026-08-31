@@ -49,7 +49,8 @@ def _make_depth_hfun(depth_field, method="polynomial",
                      wave_period=12.0, cells_per_wavelength=20, zmin=1.0,
                      custom_code=None, h_const=1000.0,
                      hmin=100.0, hmax=10000.0, detail=None, detail_hmin=None,
-                     slope_ncells=None, slope_step=500.0, slope_hmin=None):
+                     slope_ncells=None, slope_step=500.0, slope_hmin=None,
+                     domain=None):
     """Build a depth-based mesh-size function, one of three sizing laws.
 
     All methods are floored at `hmin` (`detail_hmin` inside the `detail`
@@ -105,6 +106,15 @@ def _make_depth_hfun(depth_field, method="polynomial",
         never asks for cells smaller than this, regardless of `hmin`.
         ``None`` (default) leaves the slope term floored at `hmin` only
         (via the final clip).
+    domain : shapely.geometry.base.BaseGeometry or None, optional
+        Water polygon (same CRS as the query points) clipping the size
+        function: outside it the size is `hmax` instead of a depth-derived
+        value, and the depth gradient of the slope term is evaluated
+        one-sided so it never straddles the coastline. Because the
+        gradient-limiting of :func:`smooth_precomput_hfun` only ever *lowers*
+        sizes, a neutral `hmax` outside cannot pull the sizes inside the
+        polygon down: land pixels stop driving the resolution of the water.
+        ``None`` (default) uses the whole raster, land included.
 
     Returns
     -------
@@ -131,13 +141,49 @@ def _make_depth_hfun(depth_field, method="polynomial",
         def detail_mask(xy):
             return shapely.contains_xy(detail, xy[:, 0], xy[:, 1])
 
+    domain_mask = None
+    if domain is not None:
+        # prepared geometry: the containment test runs once per grid cell of
+        # the gradient-limiting sampling grid, so it has to be cheap
+        shapely.prepare(domain)
+
+        def domain_mask(xy):
+            return shapely.contains_xy(domain, xy[:, 0], xy[:, 1])
+
+    def _depth(xy):
+        return np.asarray(depth_field(xy), dtype=float).reshape(-1)
+
     def grad_mag(xy):
+        """|grad(depth)| by central differences, one-sided at the coastline.
+
+        With a `domain`, a sample that falls outside the water polygon would
+        drag a land elevation into the difference and fake a huge gradient
+        right along the coast (which the slope term turns into spuriously
+        small elements). Such a sample is dropped and the difference taken
+        one-sided against the centre instead; when both sides are outside,
+        that component of the gradient is zero.
+        """
         e = float(slope_step)
-        dzdx = (np.asarray(depth_field(xy + [e, 0.0]), dtype=float).reshape(-1)
-                - np.asarray(depth_field(xy - [e, 0.0]), dtype=float).reshape(-1)) / (2 * e)
-        dzdy = (np.asarray(depth_field(xy + [0.0, e]), dtype=float).reshape(-1)
-                - np.asarray(depth_field(xy - [0.0, e]), dtype=float).reshape(-1)) / (2 * e)
-        return np.hypot(dzdx, dzdy)
+        d0 = _depth(xy)
+
+        def component(step):
+            xp, xm = xy + step, xy - step
+            dp, dm = _depth(xp), _depth(xm)
+            if domain_mask is None:
+                return (dp - dm) / (2 * e)
+            okp, okm = domain_mask(xp), domain_mask(xm)
+            # both sides inside -> central; one side -> one-sided; none -> 0
+            out = np.zeros_like(d0)
+            both = okp & okm
+            out[both] = (dp[both] - dm[both]) / (2 * e)
+            only_p = okp & ~okm
+            out[only_p] = (dp[only_p] - d0[only_p]) / e
+            only_m = okm & ~okp
+            out[only_m] = (d0[only_m] - dm[only_m]) / e
+            return out
+
+        return np.hypot(component(np.array([e, 0.0])),
+                        component(np.array([0.0, e])))
 
     def hfun(test):
         xy = np.atleast_2d(np.asarray(test, dtype=float))
@@ -167,7 +213,12 @@ def _make_depth_hfun(depth_field, method="polynomial",
         # safety net: a non-finite size (e.g. a NaN leaking from raster
         # nodata) must never reach the output -> fall back to the cap
         values = np.where(np.isfinite(values), values, hmax)
-        return np.clip(values, lo, hmax)
+        values = np.clip(values, lo, hmax)
+        if domain_mask is not None:
+            # neutral cap outside the water polygon: the gradient limiter only
+            # lowers sizes, so hmax there cannot affect the sizes inside
+            values = np.where(domain_mask(xy), values, hmax)
+        return values
 
     if hasattr(depth_field, "bounds"):
         hfun.bounds = depth_field.bounds
@@ -180,7 +231,7 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
                       custom_code=None, h_const=1000.0,
                       hmin=100.0, hmax=10000.0,
                       detail_geom=None, detail_hmin=None,
-                      domain_geom=None,
+                      domain_geom=None, clip_to_domain=True,
                       slope_ncells=None, slope_step=None, slope_hmin=None,
                       max_gradient=0.1, cell_size=None,
                       extent_buffer=None, invert_z=False, nodata_value=None,
@@ -190,9 +241,12 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     `domain_geom` (e.g. the stage-1 water polygon) restricts hfun computation
     to that polygon's extent instead of the whole raster -- both the
     gradient-limiting grid and the output raster are limited to it, which is
-    much faster when only a small part of a large raster is meshed. The
-    output raster is in the working CRS; its pixel values are element sizes
-    in metres.
+    much faster when only a small part of a large raster is meshed. With
+    `clip_to_domain` (the default) the raster is also *clipped* to the
+    polygon, not just to its extent: outside it the size is the neutral
+    `hmax`, so land pixels no longer drive the element size of the water
+    through the gradient limiting. The output raster is in the working CRS;
+    its pixel values are element sizes in metres.
 
     Parameters
     ----------
@@ -226,6 +280,15 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     domain_geom : shapely.geometry.base.BaseGeometry or None, optional
         Domain polygon in the *raster* CRS restricting the computed extent
         (e.g. the stage-1 water polygon). Default is ``None`` (whole raster).
+    clip_to_domain : bool, optional
+        Clip the size function to `domain_geom` itself, not merely to its
+        bounding box: depths outside the polygon are not turned into element
+        sizes, and the gradient limiting is fed the neutral `hmax` there
+        instead. Land and other excluded areas therefore cannot refine the
+        mesh inside the water. Ignored when `domain_geom` is ``None``.
+        Set ``False`` for the pre-0.1.6 behaviour, where the whole raster
+        extent (coastline and land included) fed the size function.
+        Default is ``True``.
     slope_ncells : float or None, optional
         Bathymetric-slope refinement, see :func:`_make_depth_hfun`.
         ``None`` (default) disables it.
@@ -284,11 +347,17 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
     avail = _available_ram_bytes() or 4_000_000_000
     max_cells = int(min(120_000_000, max(4_000_000, 0.15 * avail / 16.0)))
     raster_bbox = None
-    if domain_geom is not None:
-        dxmin, dymin, dxmax, dymax = _to_utm(domain_geom).bounds
+    domain_u = _to_utm(domain_geom) if domain_geom is not None else None
+    clip_u = None
+    if domain_u is not None:
+        dxmin, dymin, dxmax, dymax = domain_u.bounds
         ddw, ddh = dxmax - dxmin, dymax - dymin
         cs = cell_size if cell_size is not None \
             else max(max(ddw, ddh) / 1200.0, hmin / 2.0)
+        if clip_to_domain:
+            # widen by one sampling cell so a query sitting exactly on the
+            # coastline (boundary nodes in stage 3) still counts as inside
+            clip_u = domain_u.buffer(cs)
         if extent_buffer is None or extent_buffer < 0:
             mg = min((hmax - hmin) / max_gradient, 0.25 * max(ddw, ddh))
         else:
@@ -331,13 +400,18 @@ def build_hfun_raster(raster_path, out_path, method="polynomial",
                             detail_hmin=(detail_hmin if detail_u is not None else None),
                             slope_ncells=slope_ncells,
                             slope_step=(slope_step if slope_step else 500.0),
-                            slope_hmin=slope_hmin)
+                            slope_hmin=slope_hmin,
+                            domain=clip_u)
+    if clip_u is not None:
+        feedback.pushInfo(
+            "Clipping the size function to the water polygon "
+            "(values outside do not affect the values inside).")
     _check(feedback)
 
     # region to compute hfun over: the domain (water) polygon if given, else
     # the whole raster extent
-    if domain_geom is not None:
-        region = tuple(_to_utm(domain_geom).bounds)
+    if domain_u is not None:
+        region = tuple(domain_u.bounds)
         feedback.pushInfo("Limiting hfun to the domain polygon extent.")
     else:
         region = tuple(depth_field.bounds)

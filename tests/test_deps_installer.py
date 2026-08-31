@@ -115,3 +115,65 @@ def test_manual_command_on_conda_uses_conda_for_the_stack(deps, monkeypatch):
     assert "conda install -c conda-forge" in cmd
     # bluemesh2d has no conda package: it must come from pip, without deps
     assert "pip install --no-deps bluemesh2d" in cmd
+
+
+# --------------------------------------------------------------- PyPI check
+# `latest_version` is the only part of the module that touches the network.
+# Every test here feeds it a local file:// URL or a failing opener, so the
+# suite never depends on PyPI being reachable.
+
+def _pypi_json_file(tmp_path, version):
+    """A file:// URL serving a minimal PyPI JSON payload."""
+    import json
+    path = tmp_path / "pypi.json"
+    path.write_text(json.dumps({"info": {"version": version}}))
+    return path.as_uri()
+
+
+def test_latest_version_reads_the_release_from_the_payload(deps, tmp_path):
+    url = _pypi_json_file(tmp_path, "9.9.9")
+    assert deps.latest_version(url=url) == "9.9.9"
+
+
+def test_latest_version_returns_none_when_pypi_is_unreachable(deps, tmp_path):
+    # offline, proxy, timeout, 404: all must be swallowed, never raised
+    missing = (tmp_path / "nope.json").as_uri()
+    assert deps.latest_version(url=missing) is None
+
+
+def test_latest_version_returns_none_on_unexpected_payload(deps, tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text('{"unexpected": true}')
+    assert deps.latest_version(url=path.as_uri()) is None
+
+
+def test_update_available_flags_a_newer_release(deps, tmp_path, monkeypatch):
+    monkeypatch.setattr(deps, "installed_version", lambda dist="bluemesh2d": "0.1.4")
+    assert deps.update_available(url=_pypi_json_file(tmp_path, "0.1.6")) == "0.1.6"
+
+
+def test_update_available_is_none_when_already_latest(deps, tmp_path, monkeypatch):
+    monkeypatch.setattr(deps, "installed_version", lambda dist="bluemesh2d": "0.1.6")
+    assert deps.update_available(url=_pypi_json_file(tmp_path, "0.1.6")) is None
+    # a local build ahead of PyPI must not be reported as outdated either
+    monkeypatch.setattr(deps, "installed_version", lambda dist="bluemesh2d": "0.2.0")
+    assert deps.update_available(url=_pypi_json_file(tmp_path, "0.1.6")) is None
+
+
+def test_update_available_is_none_when_not_installed(deps, tmp_path, monkeypatch):
+    # nothing to compare: the install path fetches the newest release anyway
+    monkeypatch.setattr(deps, "installed_version", lambda dist="bluemesh2d": None)
+    assert deps.update_available(url=_pypi_json_file(tmp_path, "0.1.6")) is None
+
+
+def test_update_available_is_none_when_the_query_fails(deps, tmp_path, monkeypatch):
+    # a failed query must not read as "you are up to date"
+    monkeypatch.setattr(deps, "installed_version", lambda dist="bluemesh2d": "0.1.4")
+    assert deps.update_available(url=(tmp_path / "nope.json").as_uri()) is None
+
+
+def test_pip_required_raises_the_floor_for_an_upgrade(deps):
+    assert deps.pip_required() == deps.PIP_REQUIRED
+    specs = deps.pip_required("0.1.6")
+    assert specs[0] == "bluemesh2d>=0.1.6"
+    assert "pyproj" in specs

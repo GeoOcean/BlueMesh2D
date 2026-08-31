@@ -756,6 +756,7 @@ class _BuildHfunBase(_BaseAlg):
     SLOPE_NCELLS = "SLOPE_NCELLS"
     SLOPE_HMIN = "SLOPE_HMIN"
     MAX_GRADIENT = "MAX_GRADIENT"
+    CLIP_TO_DOMAIN = "CLIP_TO_DOMAIN"
     EXTENT_BUFFER = "EXTENT_BUFFER"
     INVERT_Z = "INVERT_Z"
     NODATA_VALUE = "NODATA_VALUE"
@@ -797,6 +798,10 @@ class _BuildHfunBase(_BaseAlg):
              "Slope min element size (m; 0 = use Min element size)",
              0.0, 0.0, 1e7)
         _num(self, self.MAX_GRADIENT, "Max size gradient (m/m)", 0.1, 1e-3, 10.0)
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.CLIP_TO_DOMAIN,
+            "Clip to the water polygon (values outside it do not affect the "
+            "sizes inside)", defaultValue=True))
         _num(self, self.EXTENT_BUFFER,
              "Buffer around the computed area (m; -1 = automatic)",
              -1.0, -1.0, 1e7, advanced=True)
@@ -858,6 +863,8 @@ class _BuildHfunBase(_BaseAlg):
                 detail_geom=detail_geom,
                 detail_hmin=self.parameterAsDouble(parameters, self.DETAIL_HMIN, context),
                 domain_geom=domain_geom,
+                clip_to_domain=self.parameterAsBool(
+                    parameters, self.CLIP_TO_DOMAIN, context),
                 slope_ncells=slope_ncells,
                 slope_hmin=slope_hmin,
                 max_gradient=self.parameterAsDouble(parameters, self.MAX_GRADIENT, context),
@@ -1963,6 +1970,7 @@ class GenerateMeshAlgorithm(_BaseAlg):
     A = "A"
     B = "B"
     MAX_GRADIENT = "MAX_GRADIENT"
+    CLIP_TO_DOMAIN = "CLIP_TO_DOMAIN"
     MIN_ANGLE = "MIN_ANGLE"
     MIN_HOLE_VERTS = "MIN_HOLE_VERTS"
     KIND = "KIND"
@@ -2010,6 +2018,10 @@ class GenerateMeshAlgorithm(_BaseAlg):
         _num(self, self.A, "Depth coefficient a (a*d^2)", 0.14, 0.0)
         _num(self, self.B, "Depth coefficient b (b*d)", 28.0, 0.0)
         _num(self, self.MAX_GRADIENT, "Max size gradient (m/m)", 0.1, 1e-3, 10.0)
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.CLIP_TO_DOMAIN,
+            "Clip the size function to the water polygon (values outside it "
+            "do not affect the sizes inside)", defaultValue=True))
         _num(self, self.MIN_ANGLE, "Min boundary angle (deg)", 25.0, 0.0, 180.0)
         _num(self, self.MIN_HOLE_VERTS, "Min hole vertices", 15, 0, 10000, integer=True)
         self.addParameter(QgsProcessingParameterEnum(
@@ -2067,6 +2079,8 @@ class GenerateMeshAlgorithm(_BaseAlg):
             hmin=self.parameterAsDouble(parameters, self.HMIN, context),
             hmax=self.parameterAsDouble(parameters, self.HMAX, context),
             max_gradient=self.parameterAsDouble(parameters, self.MAX_GRADIENT, context),
+            clip_hfun_to_domain=self.parameterAsBool(
+                parameters, self.CLIP_TO_DOMAIN, context),
             min_angle_deg=self.parameterAsDouble(parameters, self.MIN_ANGLE, context),
             min_hole_vertices=self.parameterAsInt(parameters, self.MIN_HOLE_VERTS, context),
             kind=self._KIND_OPTS[self.parameterAsEnum(parameters, self.KIND, context)],
