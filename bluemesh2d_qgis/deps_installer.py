@@ -26,6 +26,13 @@ import sysconfig
 # Oldest bluemesh2d release this plugin version works against.
 MIN_VERSION = "0.1.4"
 
+# Queried to tell the user whether their bluemesh2d is the latest release.
+# Only ever contacted from the dependency dialog (never on plugin load), and
+# every failure is swallowed: the check is informational, and QGIS must keep
+# working offline, behind a proxy or when PyPI is down.
+PYPI_JSON_URL = "https://pypi.org/pypi/{dist}/json"
+PYPI_TIMEOUT = 3.0
+
 # What pip installs. Everything the pipeline needs comes from bluemesh2d's own
 # dependency metadata, EXCEPT pyproj: the library imports it but does not
 # declare it, and nothing else in the tree pulls it in, so it stays explicit.
@@ -106,6 +113,60 @@ def needs_upgrade():
     if current is None:
         return False
     return _version_tuple(current) < _version_tuple(MIN_VERSION)
+
+
+def pip_required(min_version=None):
+    """The pip specs to install, floored at ``min_version`` (default
+    :data:`MIN_VERSION`).
+
+    Passing the newest PyPI release is how the dialog performs an *upgrade*:
+    pip only touches an already-satisfied requirement when the spec demands a
+    version it does not have, so raising the floor upgrades through every
+    install route (venv, ``--user``, ``--break-system-packages``) without an
+    extra ``--upgrade`` flag.
+    """
+    return (f"bluemesh2d>={min_version or MIN_VERSION}", "pyproj")
+
+
+def latest_version(dist="bluemesh2d", timeout=PYPI_TIMEOUT, url=None):
+    """Newest release of ``dist`` on PyPI, or None if it cannot be determined.
+
+    Standard library only (this module must stay importable in a broken
+    environment) and never raises: no network, a proxy, a timeout, an HTTP
+    error or unexpected JSON all return None, which callers treat as "cannot
+    tell" and skip the check.
+    """
+    import json
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(
+            (url or PYPI_JSON_URL).format(dist=dist),
+            headers={"User-Agent": "BlueMesh2D-QGIS-plugin"},
+        )
+        # nosec B310 -- constant https URL, not user input
+        with contextlib.closing(
+                urllib.request.urlopen(request, timeout=timeout)) as response:
+            version = json.load(response)["info"]["version"]
+        return version.strip() or None
+    except Exception:
+        return None
+
+
+def update_available(timeout=PYPI_TIMEOUT, url=None):
+    """Newest PyPI version when it is newer than the installed one, else None.
+
+    Returns None when bluemesh2d is absent (there is nothing to compare -- the
+    install path already fetches the newest release) and when PyPI cannot be
+    reached, so a failed query never looks like "you are up to date".
+    """
+    current = installed_version()
+    if current is None:
+        return None
+    latest = latest_version(timeout=timeout, url=url)
+    if latest is None:
+        return None
+    return latest if _version_tuple(current) < _version_tuple(latest) else None
 
 
 def source_checkout():
@@ -501,6 +562,11 @@ class DepsDialog:
         self._missing = find_missing(REQUIRED)
         self._outdated = needs_upgrade()
         self._checkout = source_checkout()
+        # "is it the latest?" only matters for an install that already works;
+        # when something is missing or too old, installing fetches the newest
+        # release anyway, so the query is skipped and the dialog stays instant
+        self._update = (None if (self._missing or self._outdated)
+                        else update_available())
 
         self.dialog = QDialog(parent)
         self.dialog.setWindowTitle("BlueMesh2D — Python dependencies")
@@ -516,6 +582,12 @@ class DepsDialog:
             lay.addWidget(QLabel(
                 f"<b>BlueMesh2D {installed_version()} is installed, but this "
                 f"plugin needs {MIN_VERSION} or newer.</b>"))
+        elif self._update:
+            lay.addWidget(QLabel(
+                f"<b>BlueMesh2D {installed_version()} is installed; "
+                f"{self._update} is available on PyPI.</b><br>"
+                "The plugin works with the installed version; upgrading is "
+                "optional."))
         else:
             lay.addWidget(QLabel(
                 f"<b>BlueMesh2D {installed_version()} is installed.</b>"))
@@ -549,8 +621,11 @@ class DepsDialog:
         self.close_btn.clicked.connect(self.dialog.reject)
         # a developer may want to switch to an editable install at any time,
         # so the button stays live whenever the dev checkbox is available
-        if not self._missing and not self._outdated and self.dev_box is None:
+        if (not self._missing and not self._outdated and not self._update
+                and self.dev_box is None):
             self.install_btn.setEnabled(False)
+        if self._update and not self._missing:
+            self.install_btn.setText(f"Upgrade to {self._update}")
 
     def _dev_selected(self):
         return self.dev_box is not None and self.dev_box.isChecked()
@@ -560,17 +635,19 @@ class DepsDialog:
         from qgis.PyQt.QtWidgets import QApplication
 
         dev = self._dev_selected()
+        # raising the floor to the newest release is what makes pip upgrade
+        packages = pip_required(self._update) if self._update else PIP_REQUIRED
         if dev:
             self.log.setPlainText(
                 f"Installing editable: {self._checkout} ...\n")
         else:
             self.log.setPlainText(
-                f"Installing: {', '.join(PIP_REQUIRED)} ...\n")
+                f"Installing: {', '.join(packages)} ...\n")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             ok, out = (dev_install(self._checkout) if dev
-                       else run_pip(list(PIP_REQUIRED)))
+                       else run_pip(list(packages)))
         finally:
             QApplication.restoreOverrideCursor()
         self.log.appendPlainText(out)
