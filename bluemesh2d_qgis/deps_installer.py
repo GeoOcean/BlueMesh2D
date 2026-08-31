@@ -24,7 +24,11 @@ import sys
 import sysconfig
 
 # Oldest bluemesh2d release this plugin version works against.
-MIN_VERSION = "0.1.4"
+# 0.1.7 added `clip_to_domain` / `MeshConfig.clip_hfun_to_domain`, which the
+# stage-2 and all-in-one algorithms pass unconditionally: an older library
+# raises TypeError on those keywords, so this floor is a hard requirement,
+# not a preference.
+MIN_VERSION = "0.1.7"
 
 # Queried to tell the user whether their bluemesh2d is the latest release.
 # Only ever contacted from the dependency dialog (never on plugin load), and

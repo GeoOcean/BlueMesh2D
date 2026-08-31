@@ -12,13 +12,30 @@ about=Wraps the BlueMesh2D meshing library as QGIS Processing algorithms: from a
     Each stage produces an ordinary QGIS layer, so every intermediate result can be inspected and hand-edited before the next step; an all-in-one algorithm is also available for a single-dialog run.
     Step-by-step tutorial (PDF): https://github.com/GeoOcean/BlueMesh2D/blob/develop/docs/Tuto_BlueMesh2D_Santander.pdf
     Dependencies need no manual setup. On first load the plugin detects what is missing and installs it in one click (Plugins ▸ BlueMesh2D ▸ Check / install dependencies). pip runs in QGIS's own interpreter; on Debian/Ubuntu system Python (PEP 668) the packages go into a plugin-managed virtual environment instead, leaving the system Python untouched. Installing bluemesh2d brings numpy, scipy, shapely, rasterio, matplotlib, netCDF4, xarray and triangle with it.
-version=0.1.4
+version=0.1.7
 author=Geomatics and Ocean Engineering Group
 email=faugeree@unican.es
 tracker=https://github.com/GeoOcean/BlueMesh2D/issues
 repository=https://github.com/GeoOcean/BlueMesh2D
 homepage=https://github.com/GeoOcean/BlueMesh2D/tree/develop/bluemesh2d_qgis
 changelog=
+    0.1.7
+    - Stage 2 / all-in-one: new option "Clip to the water polygon". The size
+      function is now clipped to the stage-1 polygon itself, not just to its
+      bounding box: outside it the size is the neutral maximum, so land pixels
+      no longer drag the element size of the water down through the gradient
+      limiting. On a 100 m deep channel next to flat land the elements 1 km
+      offshore were 200 m instead of the 4200 m the depth asks for; they are
+      now 4200 m. Untick the option for the previous behaviour.
+    - Slope refinement no longer straddles the coastline: the depth gradient
+      is evaluated one-sided when a sample falls on land, instead of
+      subtracting a land elevation from a sea depth and inventing a huge
+      gradient that produced tiny elements along the shore.
+    - Check / install dependencies now reports whether the installed
+      bluemesh2d is the latest release on PyPI, and offers to upgrade. The
+      query runs only when the dialog is opened, never on plugin load, and
+      every failure (offline, proxy, timeout) is ignored silently.
+    - Requires bluemesh2d 0.1.7 or newer for the clipping option.
     0.1.3
     - Stage 4 / all-in-one: new smood option "merge the remaining problematic
       elements during recovery", on by default from recovery cycle 2. A mesh
@@ -45,7 +62,7 @@ changelog=
       UGRID NetCDF, plus an all-in-one algorithm.
 category=Analysis
 icon=icon.png
-external_deps=bluemesh2d>=0.1.4,pyproj
+external_deps=bluemesh2d>=0.1.7,pyproj
 experimental=False
 deprecated=False
 hasProcessingProvider=yes
