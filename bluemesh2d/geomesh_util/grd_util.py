@@ -792,7 +792,7 @@ def build_loops(edges):
 
 def export_to_grd(
     filename, vert, tria, z, crs, edge_tag, edge_open=None, edge_land=None,
-    open_contours=None, land_contours=None,
+    open_contours=None, land_contours=None, clockwise=True,
 ):
     """Export a mesh to ADCIRC ``.grd`` format with boundary contours.
 
@@ -822,7 +822,20 @@ def export_to_grd(
         Ordered open-boundary contours (node indices per contour).
     land_contours : list of ndarray, optional
         Ordered land-boundary contours (node indices per contour).
+    clockwise : bool, default True
+        Reorder the nodes of each element clockwise before writing
+        (signed-area test on ``vert``); ``False`` writes them as given.
     """
+    tria = np.asarray(tria)
+    if clockwise and tria.size > 0:
+        x = vert[tria, 0]
+        y = vert[tria, 1]
+        # Shoelace signed area: > 0 means counter-clockwise.
+        area2 = np.sum(x * np.roll(y, -1, axis=1) - np.roll(x, -1, axis=1) * y, axis=1)
+        ccw = area2 > 0.0
+        tria = tria.copy()
+        tria[ccw] = tria[ccw][:, ::-1]
+
     if open_contours is not None:
         open_loops = [np.asarray(c, dtype=int).tolist() if np.ndim(c) > 0 else [int(c)] for c in open_contours]
     else:
