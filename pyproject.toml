@@ -35,7 +35,7 @@ dependencies = [
     "netCDF4",
     "rasterio",
     "xarray",
-    "shapely",
+    "shapely>=2.0",
 ]
 
 [project.urls]

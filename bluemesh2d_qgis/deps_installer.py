@@ -28,7 +28,7 @@ import sysconfig
 # stage-2 and all-in-one algorithms pass unconditionally: an older library
 # raises TypeError on those keywords, so this floor is a hard requirement,
 # not a preference.
-MIN_VERSION = "0.1.7"
+MIN_VERSION = "0.1.8"
 
 # Queried to tell the user whether their bluemesh2d is the latest release.
 # Only ever contacted from the dependency dialog (never on plugin load), and
@@ -40,7 +40,13 @@ PYPI_TIMEOUT = 3.0
 # What pip installs. Everything the pipeline needs comes from bluemesh2d's own
 # dependency metadata, EXCEPT pyproj: the library imports it but does not
 # declare it, and nothing else in the tree pulls it in, so it stays explicit.
-PIP_REQUIRED = (f"bluemesh2d>={MIN_VERSION}", "pyproj")
+# shapely>=2.0 is explicit because the library calls shapely.prepare and
+# shapely.contains_xy (both new in 2.0) while older bluemesh2d releases
+# declare plain "shapely": QGIS on macOS ships Shapely 1.x, which satisfied
+# that and then failed with "module 'shapely' has no attribute 'prepare'".
+MIN_SHAPELY = "2.0"
+PIP_REQUIRED = (f"bluemesh2d>={MIN_VERSION}", "pyproj",
+                f"shapely>={MIN_SHAPELY}")
 
 # Conda-forge names of the dependency stack. Only used to spell out the
 # manual command on conda-based QGIS installs (see manual_command): there is
@@ -108,11 +114,16 @@ def installed_version(dist="bluemesh2d"):
 
 
 def needs_upgrade():
-    """True when bluemesh2d is installed but older than :data:`MIN_VERSION`.
+    """True when bluemesh2d is older than :data:`MIN_VERSION`, or shapely
+    older than :data:`MIN_SHAPELY`.
 
     Such an install satisfies :func:`find_missing` yet is too old for this
     plugin, so the dialog must still offer to install.
     """
+    shapely_v = installed_version("shapely")
+    if shapely_v is not None and (
+            _version_tuple(shapely_v) < _version_tuple(MIN_SHAPELY)):
+        return True
     current = installed_version()
     if current is None:
         return False
@@ -129,7 +140,8 @@ def pip_required(min_version=None):
     install route (venv, ``--user``, ``--break-system-packages``) without an
     extra ``--upgrade`` flag.
     """
-    return (f"bluemesh2d>={min_version or MIN_VERSION}", "pyproj")
+    return (f"bluemesh2d>={min_version or MIN_VERSION}", "pyproj",
+            f"shapely>={MIN_SHAPELY}")
 
 
 def latest_version(dist="bluemesh2d", timeout=PYPI_TIMEOUT, url=None):
@@ -596,7 +608,9 @@ class DepsDialog:
         elif self._outdated:
             lay.addWidget(QLabel(
                 f"<b>BlueMesh2D {installed_version()} is installed, but this "
-                f"plugin needs {MIN_VERSION} or newer.</b>"))
+                f"plugin needs {MIN_VERSION} or newer, with shapely "
+                f"{MIN_SHAPELY} or newer (found {installed_version('shapely')})."
+                "</b>"))
         elif self._update:
             lay.addWidget(QLabel(
                 f"<b>BlueMesh2D {installed_version()} is installed; "
