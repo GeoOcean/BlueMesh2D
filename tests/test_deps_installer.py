@@ -56,14 +56,31 @@ def test_version_tuple_orders_releases(deps):
     assert deps._version_tuple("0.1.1rc1") == (0, 1, 1)
 
 
+def _fake_versions(**versions):
+    return lambda dist="bluemesh2d": versions.get(dist)
+
+
 def test_needs_upgrade(deps, monkeypatch):
-    monkeypatch.setattr(deps, "installed_version", lambda: None)
+    monkeypatch.setattr(deps, "installed_version", _fake_versions())
     assert deps.needs_upgrade() is False  # not installed != outdated
 
-    monkeypatch.setattr(deps, "installed_version", lambda: "0.0.9")
+    monkeypatch.setattr(deps, "installed_version",
+                        _fake_versions(bluemesh2d="0.0.9"))
     assert deps.needs_upgrade() is True
 
-    monkeypatch.setattr(deps, "installed_version", lambda: deps.MIN_VERSION)
+    monkeypatch.setattr(deps, "installed_version",
+                        _fake_versions(bluemesh2d=deps.MIN_VERSION))
+    assert deps.needs_upgrade() is False
+
+
+def test_needs_upgrade_old_shapely(deps, monkeypatch):
+    # shapely 1.x has no shapely.prepare / contains_xy
+    monkeypatch.setattr(deps, "installed_version", _fake_versions(
+        bluemesh2d=deps.MIN_VERSION, shapely="1.8.5"))
+    assert deps.needs_upgrade() is True
+
+    monkeypatch.setattr(deps, "installed_version", _fake_versions(
+        bluemesh2d=deps.MIN_VERSION, shapely="2.0.1"))
     assert deps.needs_upgrade() is False
 
 
