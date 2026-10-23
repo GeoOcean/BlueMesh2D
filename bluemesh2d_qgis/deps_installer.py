@@ -40,13 +40,23 @@ PYPI_TIMEOUT = 3.0
 # What pip installs. Everything the pipeline needs comes from bluemesh2d's own
 # dependency metadata, EXCEPT pyproj: the library imports it but does not
 # declare it, and nothing else in the tree pulls it in, so it stays explicit.
-# shapely>=2.0 is explicit because the library calls shapely.prepare and
-# shapely.contains_xy (both new in 2.0) while older bluemesh2d releases
-# declare plain "shapely": QGIS on macOS ships Shapely 1.x, which satisfied
-# that and then failed with "module 'shapely' has no attribute 'prepare'".
-MIN_SHAPELY = "2.0"
+# Floors for the compiled/scientific packages the pipeline calls into. They
+# are explicit because bluemesh2d declares most of them unpinned, so an old
+# copy already in QGIS's Python satisfies it and then fails at run time:
+#   shapely<2.0   -> "module 'shapely' has no attribute 'prepare'"
+#                    (shapely.prepare / contains_xy are new in 2.0)
+#   netCDF4<1.6.4 -> "module 'numpy' has no attribute 'bool'" when reading the
+#                    mesh with NumPy >= 1.24 (older netCDF4 uses np.bool)
+# xarray and scipy are floored for the same NumPy-1.24+ reason. numpy itself
+# is deliberately left alone: QGIS ships it, see _numpy_constraint.
+MIN_PACKAGES = {
+    "shapely": "2.0",
+    "netCDF4": "1.6.4",
+    "xarray": "2023.1",
+    "scipy": "1.10",
+}
 PIP_REQUIRED = (f"bluemesh2d>={MIN_VERSION}", "pyproj",
-                f"shapely>={MIN_SHAPELY}")
+                *(f"{name}>={ver}" for name, ver in MIN_PACKAGES.items()))
 
 # Conda-forge names of the dependency stack. Only used to spell out the
 # manual command on conda-based QGIS installs (see manual_command): there is
@@ -113,16 +123,28 @@ def installed_version(dist="bluemesh2d"):
         return None
 
 
+def outdated_packages():
+    """``{name: installed_version}`` for packages below :data:`MIN_PACKAGES`.
+
+    Metadata only, so safe in a live QGIS; a package that is not installed is
+    not listed (pip pulls it in with bluemesh2d).
+    """
+    old = {}
+    for name, floor in MIN_PACKAGES.items():
+        found = installed_version(name) or installed_version(name.lower())
+        if found is not None and _version_tuple(found) < _version_tuple(floor):
+            old[name] = found
+    return old
+
+
 def needs_upgrade():
-    """True when bluemesh2d is older than :data:`MIN_VERSION`, or shapely
-    older than :data:`MIN_SHAPELY`.
+    """True when bluemesh2d is older than :data:`MIN_VERSION`, or any package
+    is below its :data:`MIN_PACKAGES` floor.
 
     Such an install satisfies :func:`find_missing` yet is too old for this
     plugin, so the dialog must still offer to install.
     """
-    shapely_v = installed_version("shapely")
-    if shapely_v is not None and (
-            _version_tuple(shapely_v) < _version_tuple(MIN_SHAPELY)):
+    if outdated_packages():
         return True
     current = installed_version()
     if current is None:
@@ -140,8 +162,7 @@ def pip_required(min_version=None):
     install route (venv, ``--user``, ``--break-system-packages``) without an
     extra ``--upgrade`` flag.
     """
-    return (f"bluemesh2d>={min_version or MIN_VERSION}", "pyproj",
-            f"shapely>={MIN_SHAPELY}")
+    return (f"bluemesh2d>={min_version or MIN_VERSION}",) + PIP_REQUIRED[1:]
 
 
 def latest_version(dist="bluemesh2d", timeout=PYPI_TIMEOUT, url=None):
@@ -580,6 +601,17 @@ class DepsDialog:
     module can be imported and unit-tested without Qt.
     """
 
+    @staticmethod
+    def _outdated_text():
+        lines = []
+        old = outdated_packages()
+        for name, ver in old.items():
+            lines.append(f"{name} {ver} (needs {MIN_PACKAGES[name]} or newer)")
+        current = installed_version()
+        if current and _version_tuple(current) < _version_tuple(MIN_VERSION):
+            lines.append(f"bluemesh2d {current} (needs {MIN_VERSION} or newer)")
+        return "<br>".join(lines)
+
     def __init__(self, parent=None):
         from qgis.PyQt.QtWidgets import (
             QCheckBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
@@ -607,10 +639,8 @@ class DepsDialog:
                 "rasterio, matplotlib, netCDF4, xarray and triangle."))
         elif self._outdated:
             lay.addWidget(QLabel(
-                f"<b>BlueMesh2D {installed_version()} is installed, but this "
-                f"plugin needs {MIN_VERSION} or newer, with shapely "
-                f"{MIN_SHAPELY} or newer (found {installed_version('shapely')})."
-                "</b>"))
+                "<b>Some installed packages are too old for this "
+                "plugin:</b><br>" + self._outdated_text()))
         elif self._update:
             lay.addWidget(QLabel(
                 f"<b>BlueMesh2D {installed_version()} is installed; "

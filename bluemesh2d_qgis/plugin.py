@@ -46,8 +46,7 @@ class BlueMesh2DPlugin:
         if missing or needs_upgrade():
             what = ("The BlueMesh2D library is not installed in this QGIS"
                     if missing else
-                    f"The installed BlueMesh2D library is older than "
-                    f"{MIN_VERSION}, or shapely is older than 2.0")
+                    "An installed BlueMesh2D dependency is too old")
             msg = (what + " — use Plugins > BlueMesh2D > Check / install "
                    "dependencies, then restart QGIS.")
             parent = self._main_window()

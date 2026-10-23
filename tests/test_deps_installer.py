@@ -73,15 +73,19 @@ def test_needs_upgrade(deps, monkeypatch):
     assert deps.needs_upgrade() is False
 
 
-def test_needs_upgrade_old_shapely(deps, monkeypatch):
-    # shapely 1.x has no shapely.prepare / contains_xy
-    monkeypatch.setattr(deps, "installed_version", _fake_versions(
-        bluemesh2d=deps.MIN_VERSION, shapely="1.8.5"))
-    assert deps.needs_upgrade() is True
+def test_needs_upgrade_old_packages(deps, monkeypatch):
+    # shapely 1.x has no shapely.prepare; netCDF4 1.5 uses the removed np.bool
+    ok = {"bluemesh2d": deps.MIN_VERSION, **deps.MIN_PACKAGES}
+    for name, old in (("shapely", "1.8.5"), ("netCDF4", "1.5.4"),
+                      ("scipy", "1.5.1")):
+        monkeypatch.setattr(deps, "installed_version",
+                            _fake_versions(**{**ok, name: old}))
+        assert deps.needs_upgrade() is True
+        assert list(deps.outdated_packages()) == [name]
 
-    monkeypatch.setattr(deps, "installed_version", _fake_versions(
-        bluemesh2d=deps.MIN_VERSION, shapely="2.0.1"))
+    monkeypatch.setattr(deps, "installed_version", _fake_versions(**ok))
     assert deps.needs_upgrade() is False
+    assert deps.outdated_packages() == {}
 
 
 def test_source_checkout_finds_this_repo(deps):
