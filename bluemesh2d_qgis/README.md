@@ -162,8 +162,13 @@ pyproj`. pip runs inside QGIS's own interpreter — the right one on every
 platform — with `--user`. On Debian/Ubuntu system Python (PEP 668,
 "externally managed"), packages go into a small plugin-managed virtual
 environment (`.../profiles/<profile>/python/bluemesh2d_deps`, created with
-`--system-site-packages`) that the plugin adds to `sys.path` on load — the
-system Python is never modified and `--break-system-packages` is not needed.
+`--system-site-packages`) that the plugin puts on `sys.path` on load, ahead
+of the system's own site-packages — so a newer package installed here wins
+over an older distribution copy (e.g. apt's `python3-shapely` 1.8) — and the
+system Python is never modified. The venv is built with a standalone
+`python` found next to QGIS's; where there is none (on macOS
+`sys.executable` is the QGIS application itself, as with Homebrew's QGIS) the
+install falls back to `--user --break-system-packages` in QGIS's own pip.
 If that Python lacks pip entirely (no `python3-pip`), pip is bootstrapped
 into the venv automatically with the official `get-pip.py`. On conda-based
 QGIS the dialog shows the manual command instead of running pip.
@@ -286,6 +291,12 @@ captures the mesher's stdout into the log.
   The upload validator requires `metadata.txt` and `LICENSE` inside the
   plugin folder — both are tracked here, so nothing has to be copied in
   first.
+- Windows, macOS and Linux share one code path; the OS-dependent parts live in
+  `deps_installer.py` (interpreter and venv layout, pip strategy, shell
+  quoting of the manual commands, `sys.path` order). Its tests
+  (`tests/test_deps_installer.py`) run on all three in CI
+  (`.github/workflows/test-qgis-plugin.yml`); the Qt dialog and the
+  Processing algorithms need a running QGIS and are checked by hand.
 - The plugin and the library version independently: `metadata.txt` carries the
   plugin version, `MIN_VERSION` in `deps_installer.py` is the oldest
   `bluemesh2d` release it works against. Bump the latter when an algorithm

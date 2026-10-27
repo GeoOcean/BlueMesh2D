@@ -18,6 +18,7 @@ import contextlib
 import io
 import os
 import platform
+import re
 import site
 import subprocess  # nosec B404 -- fixed argv, shell=False; see _venv_has_pip
 import sys
@@ -279,12 +280,68 @@ def _migrate_old_venv():
             shutil.move(old, new)
 
 
+def _is_windows():
+    return platform.system() == "Windows"
+
+
+def _no_console():
+    """``subprocess`` keywords that stop a console window flashing up.
+
+    QGIS is a GUI process on Windows, so every child process would otherwise
+    open (and immediately close) its own console window. Nothing to add on
+    macOS / Linux.
+    """
+    if _is_windows():
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    return {}
+
+
 def _venv_site_packages(venv=None):
     venv = venv or _venv_dir()
-    if platform.system() == "Windows":
+    if _is_windows():
         return os.path.join(venv, "Lib", "site-packages")
     v = f"python{sys.version_info.major}.{sys.version_info.minor}"
     return os.path.join(venv, "lib", v, "site-packages")
+
+
+def _same_path(a, b):
+    return os.path.normcase(os.path.abspath(a or ".")) == \
+        os.path.normcase(os.path.abspath(b or "."))
+
+
+def _system_site_entry(paths):
+    """First entry of ``paths`` that is a system site-packages dir, or None."""
+    try:
+        system = site.getsitepackages()
+    except Exception:
+        return None
+    for entry in paths:
+        if any(_same_path(entry, s) for s in system):
+            return entry
+    return None
+
+
+def _add_site_first(path):
+    """Add a site dir (and the ``.pth`` entries in it) ahead of the system's.
+
+    ``site.addsitedir`` appends, so a copy of a package in the system
+    site-packages still wins over the one pip just installed here: Ubuntu's
+    ``python3-shapely`` 1.8, or the Shapely 1.x inside the macOS bundle,
+    would shadow the Shapely 2 this plugin installs, and the "upgrade" would
+    change nothing. Python orders its own sys.path at start-up as user site,
+    then system site-packages; this does the same for a directory that only
+    appeared after start-up. Without a system site-packages entry to anchor
+    on, it falls back to appending.
+    """
+    before = list(sys.path)
+    anchor = _system_site_entry(before)
+    site.addsitedir(path)
+    added = [p for p in sys.path if p not in before]
+    if added and anchor is not None:
+        rest = [p for p in sys.path if p not in added]
+        at = rest.index(anchor)
+        sys.path[:] = rest[:at] + added + rest[at:]
+    return bool(added)
 
 
 def _activate_user_site():
@@ -300,7 +357,7 @@ def _activate_user_site():
     except Exception:
         return False
     if us and os.path.isdir(us) and us not in sys.path:
-        site.addsitedir(us)
+        _add_site_first(us)
         return True
     return False
 
@@ -315,14 +372,60 @@ def activate_venv():
     _activate_user_site()
     sp = _venv_site_packages()
     if os.path.isdir(sp) and sp not in sys.path:
-        site.addsitedir(sp)
+        _add_site_first(sp)
         return True
     return False
 
 
 def _venv_python(venv):
-    return os.path.join(venv, "Scripts" if platform.system() == "Windows"
-                        else "bin", "python")
+    if _is_windows():
+        return os.path.join(venv, "Scripts", "python.exe")
+    return os.path.join(venv, "bin", "python")
+
+
+_PYTHON_NAME = re.compile(r"^python(\d+(\.\d+)?)?w?(\.exe)?$", re.IGNORECASE)
+
+
+def _python_executable():
+    """A standalone interpreter of the running Python's version, or None.
+
+    ``sys.executable`` is only a Python when the interpreter runs on its own.
+    Embedded in QGIS it is the host application: ``qgis-bin.exe`` on Windows,
+    the QGIS binary inside ``QGIS.app`` on macOS (including Homebrew's
+    build). Running that with ``-m venv`` or ``-m pip`` starts another QGIS
+    instead of Python, so a candidate is only ever executed when its file name
+    says Python, and then only after it has proved it can report the very
+    same ``major.minor`` -- which also rejects the macOS bundle's own
+    ``python3.x``, which aborts when run outside the app.
+    """
+    ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    names = (f"python{ver}", "python3", "python")
+    if _is_windows():
+        names = tuple(n + ".exe" for n in names)
+    base = getattr(sys, "base_exec_prefix", sys.exec_prefix)
+    dirs = [sysconfig.get_config_var("BINDIR"), os.path.join(base, "bin"),
+            base, os.path.join(base, "Scripts")]
+    candidates = [sys.executable, getattr(sys, "_base_executable", None)]
+    candidates += [os.path.join(d, n) for d in dirs if d for n in names]
+
+    seen = set()
+    for cand in candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        if not _PYTHON_NAME.match(os.path.basename(cand)) \
+                or not os.path.isfile(cand):
+            continue
+        try:
+            out = subprocess.run(  # nosec B603 -- python-named, fixed argv
+                [cand, "-I", "-c",
+                 "import sys; print('%d.%d' % sys.version_info[:2])"],
+                capture_output=True, text=True, timeout=30, **_no_console())
+        except Exception:
+            continue
+        if out.returncode == 0 and out.stdout.strip() == ver:
+            return cand
+    return None
 
 
 def _venv_has_pip(venv):
@@ -339,8 +442,8 @@ def _venv_has_pip(venv):
         return False
     try:
         return subprocess.run([py, "-m", "pip", "--version"],  # nosec B603
-                              capture_output=True, timeout=120
-                              ).returncode == 0
+                              capture_output=True, timeout=120,
+                              **_no_console()).returncode == 0
     except Exception:
         return False
 
@@ -361,6 +464,7 @@ def _bootstrap_pip(venv, log):
     if not url.startswith("https://"):
         raise ValueError("get-pip.py must be fetched over https")
     log.append(f"pip is missing: bootstrapping it from {url} ...")
+    path = None
     try:
         with urllib.request.urlopen(url, timeout=60) as resp:  # nosec B310
             script = resp.read()
@@ -369,8 +473,8 @@ def _bootstrap_pip(venv, log):
             f.write(script)
             path = f.name
         proc = subprocess.run([_venv_python(venv), path],  # nosec B603
-                              capture_output=True, text=True, timeout=600)
-        os.unlink(path)
+                              capture_output=True, text=True, timeout=600,
+                              **_no_console())
         log.append(proc.stdout[-2000:])
         if proc.returncode != 0:
             log.append(proc.stderr[-2000:])
@@ -379,35 +483,53 @@ def _bootstrap_pip(venv, log):
     except Exception as exc:
         log.append(f"pip bootstrap failed: {exc}")
         return False
+    finally:
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
 
 
 def _create_venv(log):
     """Create the plugin venv (with pip) seeing QGIS's system packages.
 
-    The venv is ALWAYS created without pip first: Debian's patched ``venv``
-    module calls ``sys.exit(1)`` when ensurepip is unavailable, and running
-    ``with_pip=True`` in-process would terminate QGIS itself. pip is then
-    added from a subprocess (isolated, cannot kill QGIS): ``ensurepip`` when
-    available, the official get-pip.py otherwise.
-    """
-    import venv as venv_mod
+    Everything runs in a subprocess of a standalone interpreter (see
+    :func:`_python_executable`), never in-process: ``sys.executable`` may be
+    the QGIS binary, which an in-process ``venv.EnvBuilder`` would copy into
+    the venv as its "python". The venv is ALWAYS created without pip first:
+    Debian's patched ``venv`` module calls ``sys.exit(1)`` when ensurepip is
+    unavailable, which would terminate QGIS itself if run in-process. pip is
+    then added the same way: ``ensurepip`` when available, the official
+    get-pip.py otherwise.
 
+    Returns None when there is no standalone interpreter to build it with
+    (e.g. a macOS QGIS.app): the caller then installs without a venv.
+    """
     _migrate_old_venv()
     venv = _venv_dir()
     if _venv_has_pip(venv):
         return venv
+    base_python = _python_executable()
+    if base_python is None:
+        log.append("No standalone Python interpreter was found next to this "
+                   "QGIS; a virtual environment cannot be created.")
+        return None
     log.append(f"Creating a dedicated environment: {venv}")
     try:
-        venv_mod.EnvBuilder(system_site_packages=True,
-                            with_pip=False).create(venv)
-    except BaseException as exc:  # incl. SystemExit from patched builders
+        proc = subprocess.run(  # nosec B603
+            [base_python, "-m", "venv", "--system-site-packages",
+             "--without-pip", venv],
+            capture_output=True, text=True, timeout=600, **_no_console())
+        if proc.returncode != 0:
+            log.append(f"venv creation failed: {proc.stderr[-2000:]}")
+            return None
+    except Exception as exc:
         log.append(f"venv creation failed: {exc}")
         return None
     py = _venv_python(venv)
     try:
         proc = subprocess.run(  # nosec B603
             [py, "-Im", "ensurepip", "--upgrade", "--default-pip"],
-            capture_output=True, text=True, timeout=600)
+            capture_output=True, text=True, timeout=600, **_no_console())
         if proc.returncode == 0 and _venv_has_pip(venv):
             return venv
         log.append("ensurepip unavailable; using get-pip.py instead ...")
@@ -427,7 +549,7 @@ def _venv_pip_install(packages, log):
     try:
         proc = subprocess.run(  # nosec B603
             [py, "-m", "pip", "install", *packages],
-            capture_output=True, text=True, timeout=1800)
+            capture_output=True, text=True, timeout=1800, **_no_console())
         log.append(proc.stdout)
         if proc.stderr:
             log.append(proc.stderr)
@@ -481,29 +603,51 @@ def pip_args(packages, force_break=False):
     return args + list(packages)
 
 
+_PLAIN_SPEC = re.compile(r"^[A-Za-z0-9_.+-]+$")
+
+
+def _quote(text):
+    """Quote ``text`` for a command line, only when it needs it.
+
+    The specs carry ``>=`` / ``<``, which are redirections in cmd, PowerShell,
+    bash and zsh alike: an unquoted ``bluemesh2d>=0.1.8`` silently installs
+    the unpinned package and writes a file called ``=0.1.8``. Double quotes
+    are the one form all four read literally (cmd ignores single quotes).
+    """
+    return text if _PLAIN_SPEC.match(text) else f'"{text}"'
+
+
 def manual_command(packages=PIP_REQUIRED):
     """The per-OS command a user can run by hand if the dialog's pip fails.
 
     ``packages`` are pip requirement specs; conda gets the same specs, since
     bluemesh2d is on conda-forge only via pip anyway -- there is no apt/conda
     system package for it, which is why the old distro-package hint is gone.
+    Every spec is quoted (see :func:`_quote`) so the command can be pasted
+    into any shell as is; where it must be run is said on the line after it.
     """
-    pkgs = " ".join(packages)
+    pkgs = " ".join(_quote(p) for p in packages)
     if _is_conda():
         # bluemesh2d has no conda package, but its dependencies do -- and
         # letting pip pull binary wheels into a conda env is what breaks it.
         # So: conda for the stack, pip --no-deps for the library itself.
         return (f"conda install -c conda-forge {' '.join(CONDA_PACKAGES)}\n"
-                f"  python -m pip install --no-deps bluemesh2d>={MIN_VERSION}")
+                f"  python -m pip install --no-deps "
+                f"{_quote(f'bluemesh2d>={MIN_VERSION}')}")
     system = platform.system()
     if system == "Windows":
-        return f"python -m pip install {pkgs}   (in the OSGeo4W Shell)"
+        return (f"python -m pip install --user {pkgs}\n"
+                "  (run it in the OSGeo4W Shell)")
     if system == "Darwin":
         arglist = ", ".join(f"'{p}'" for p in packages)
-        return (f"import pip; pip.main(['install', '--user', {arglist}])"
-                "   (in the QGIS Python console)")
+        return (f"import pip; pip.main(['install', '--user', {arglist}])\n"
+                "  (run it in the QGIS Python console)")
     if _is_externally_managed():
-        return f"{_venv_dir()}/bin/python -m pip install {pkgs}"
+        venv_python = _quote(_venv_python(_venv_dir()))
+        return (f"{venv_python} -m pip install {pkgs}\n"
+                "  or, if that environment does not exist yet:\n"
+                f"  python3 -m pip install --user --break-system-packages "
+                f"{pkgs}")
     return f"python3 -m pip install --user {pkgs}"
 
 
@@ -524,14 +668,31 @@ def _numpy_constraint():
         return None
 
 
+def _pip_missing_hint():
+    """What to do when this Python has no pip (nothing to say on macOS)."""
+    system = platform.system()
+    if system == "Windows":
+        return ("Re-run the OSGeo4W installer (Advanced Install) and add the "
+                "python3-pip package, then click 'Install now' again.")
+    if system == "Linux":
+        return ("Install pip for this Python with your package manager, then "
+                "click 'Install now' again:\n"
+                "  Debian/Ubuntu: sudo apt install python3-pip python3-venv\n"
+                "  Fedora:        sudo dnf install python3-pip\n"
+                "  Arch:          sudo pacman -S python-pip")
+    return ""
+
+
 def run_pip(packages, log=None):
     """Install ``packages`` with the strategy fitting this platform.
 
     - conda QGIS: refuse and show the conda command.
-    - PEP 668 (Debian/Ubuntu system Python): install into a plugin-managed
-      venv created with ``--system-site-packages`` (no
+    - PEP 668 (Debian/Ubuntu system Python, Homebrew Python): install into a
+      plugin-managed venv created with ``--system-site-packages`` (no
       ``--break-system-packages`` needed); fall back to in-process pip with
-      that flag only if the venv cannot be created.
+      that flag if the venv cannot be created, which includes hosts that have
+      no standalone interpreter to build it with (see
+      :func:`_python_executable`).
     - everywhere else: in-process ``pip.main --user`` (the only invocation
       that works on every QGIS bundle -- macOS vcpkg builds ship a python
       executable that cannot run standalone).
@@ -559,10 +720,9 @@ def run_pip(packages, log=None):
             return True, "\n".join(lines)
         lines.append("\nFalling back to --break-system-packages ...")
         ok, out = _run_pip_inprocess(pip_args(packages, force_break=True))
-        if not ok:
-            out += ("\n\nIf pip/venv are unavailable on this system, install "
-                    "them once with:\n  sudo apt install python3-pip "
-                    "python3-venv\nthen click 'Install now' again.")
+        if not ok and _pip_missing_hint():
+            out += "\n\nIf pip/venv are unavailable on this system: " \
+                + _pip_missing_hint()
         return ok, "\n".join(lines) + "\n" + out
 
     ok, out = _run_pip_inprocess(pip_args(packages))
@@ -570,6 +730,8 @@ def run_pip(packages, log=None):
         # a first-ever --user install creates the user site dir mid-session;
         # put it on sys.path so the post-install check can see the packages
         _activate_user_site()
+    elif "pip is not available" in out and _pip_missing_hint():
+        out += "\n\n" + _pip_missing_hint()
     return ok, out
 
 
@@ -662,7 +824,7 @@ class DepsDialog:
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(160)
+        self.log.setMinimumHeight(270)  # fits the longest manual command
         self.log.setPlaceholderText(
             "pip output will appear here.\n\nManual fallback command:\n  "
             + manual_command())
