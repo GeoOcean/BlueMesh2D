@@ -54,6 +54,7 @@ from qgis.core import (
     QgsProcessingParameterRasterLayer,
     QgsProcessingParameterString,
     QgsProject,
+    QgsProviderRegistry,
     QgsWkbTypes,
 )
 
@@ -1443,9 +1444,38 @@ class GenerateMeshFromBoundaryAlgorithm(_BaseAlg):
 # ---------------------------------------------------------------------------
 
 def _mesh_source_path(layer):
+    """Filesystem path of a mesh layer's file.
+
+    Asks the layer's own provider to decode its URI, which copes with what a
+    plain string split cannot: a driver prefix (``UGRID:"C:/x.nc":mesh2d``)
+    or a ``?`` that is part of a POSIX file name. The decoded path is only
+    trusted when it is a real file; otherwise the historical split on ``?``
+    applies, so nothing that worked before can stop working.
+    """
     if layer is None:
         raise QgsProcessingException("Invalid mesh layer.")
-    return layer.source().split("?")[0]
+    source = layer.source()
+    with contextlib.suppress(Exception):
+        parts = QgsProviderRegistry.instance().decodeUri(
+            layer.providerType(), source)
+        path = parts.get("path") if parts else None
+        if path and os.path.isfile(path):
+            return path
+    return source.split("?")[0]
+
+
+def _same_file(a, b):
+    """True when both paths name one file, however each was spelled.
+
+    ``os.path.abspath`` alone says ``c:/x.nc`` and ``C:\\x.nc`` differ, and
+    so would ``Mesh.nc`` / ``mesh.nc`` on the case-insensitive default
+    filesystems of Windows and macOS; copying a file onto itself raises.
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:  # one of them does not exist (yet): compare the spelling
+        return os.path.normcase(os.path.abspath(a)) == \
+            os.path.normcase(os.path.abspath(b))
 
 
 def _boundary_lines_by_type(source, target_crs):
@@ -1811,7 +1841,7 @@ class ExportUgridAlgorithm(_ExportBase):
             parameters, self.METADATA, context))
 
         try:
-            if os.path.abspath(src_path) != os.path.abspath(out_path):
+            if not _same_file(src_path, out_path):
                 shutil.copyfile(src_path, out_path)
             if meta:
                 apply_nc_metadata(out_path, meta)

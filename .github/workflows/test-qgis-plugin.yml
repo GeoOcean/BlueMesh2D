@@ -1,0 +1,48 @@
+name: Test QGIS Plugin Installer
+
+# deps_installer.py is the one part of the plugin that behaves differently per
+# OS (interpreter and venv layout, pip strategy, shell quoting, sys.path
+# order), and it is importable without QGIS. Run its tests where those
+# differences are real rather than simulated.
+on:
+  push:
+    paths:
+      - "bluemesh2d_qgis/**"
+      - "tests/test_deps_installer.py"
+      - "tests/conftest.py"
+      - ".github/workflows/test-qgis-plugin.yml"
+  pull_request:
+    paths:
+      - "bluemesh2d_qgis/**"
+      - "tests/test_deps_installer.py"
+      - "tests/conftest.py"
+      - ".github/workflows/test-qgis-plugin.yml"
+  workflow_dispatch:
+
+jobs:
+  installer-tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # QGIS 3.34 LTR ships 3.9-3.12 depending on the platform
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # tests/conftest.py imports matplotlib for the meshing tests; nothing
+      # else of the library is needed to exercise the installer
+      - name: Install test dependencies
+        run: python -m pip install pytest matplotlib
+
+      - name: Run installer tests
+        run: python -m pytest tests/test_deps_installer.py -v

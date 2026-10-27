@@ -12,13 +12,33 @@ about=Wraps the BlueMesh2D meshing library as QGIS Processing algorithms: from a
     Each stage produces an ordinary QGIS layer, so every intermediate result can be inspected and hand-edited before the next step; an all-in-one algorithm is also available for a single-dialog run.
     Step-by-step tutorial (PDF): https://github.com/GeoOcean/BlueMesh2D/blob/develop/docs/Tuto_BlueMesh2D_Santander.pdf
     Dependencies need no manual setup. On first load the plugin detects what is missing and installs it in one click (Plugins ▸ BlueMesh2D ▸ Check / install dependencies). pip runs in QGIS's own interpreter; on Debian/Ubuntu system Python (PEP 668) the packages go into a plugin-managed virtual environment instead, leaving the system Python untouched. Installing bluemesh2d brings numpy, scipy, shapely, rasterio, matplotlib, netCDF4, xarray and triangle with it.
-version=0.1.9
+version=0.2.0
 author=Geomatics and Ocean Engineering Group
 email=faugeree@unican.es
 tracker=https://github.com/GeoOcean/BlueMesh2D/issues
 repository=https://github.com/GeoOcean/BlueMesh2D
 homepage=https://github.com/GeoOcean/BlueMesh2D/tree/develop/bluemesh2d_qgis
 changelog=
+    0.2.0
+    - Cross-platform install fixes. The manual fallback commands shown in the
+      dependency dialog now quote every requirement: unquoted, "bluemesh2d>=0.1.8"
+      is a redirection in cmd, PowerShell, bash and zsh and installed the
+      unpinned package.
+    - Packages installed by the dialog now take precedence over older copies
+      in the system site-packages (e.g. Ubuntu's python3-shapely 1.8), which
+      used to shadow them so the upgrade changed nothing.
+    - The plugin virtual environment (Debian/Ubuntu, Homebrew) is built with a
+      real Python interpreter. Where QGIS provides none (macOS: sys.executable
+      is the QGIS application) pip runs in QGIS itself instead of launching a
+      second QGIS.
+    - Windows: no console window flashes up during installation, the venv
+      interpreter is looked up as python.exe, and a missing pip gets an
+      OSGeo4W-specific hint. Linux: the missing-pip hint also covers Fedora and
+      Arch.
+    - Export 6a no longer fails when the output is the same file as the input
+      spelled differently (drive-letter case, or file-name case on Windows and
+      macOS); mesh layers are located through their provider instead of by
+      splitting the URI.
     0.1.9
     - Fix "hfun raster failed: module 'shapely' has no attribute 'prepare'"
       (seen on macOS, where QGIS ships Shapely 1.x): the library needs

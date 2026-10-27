@@ -7,6 +7,7 @@ crashing QGIS's plugin loader with a raw traceback.
 """
 
 import contextlib
+import sys
 
 from qgis.core import QgsApplication
 
@@ -14,6 +15,18 @@ from .deps_installer import (
     MIN_VERSION, REQUIRED, DepsDialog, activate_venv, find_missing,
     needs_upgrade,
 )
+
+
+def _stderr(msg):
+    """Write to stderr when there is one (headless ``qgis_process`` has it).
+
+    A windowed Windows process started without a console has no stderr:
+    ``sys.stderr`` is None and a bare ``write`` would raise out of the plugin
+    loader.
+    """
+    if sys.stderr is not None:
+        with contextlib.suppress(Exception):
+            sys.stderr.write("BlueMesh2D: " + msg + "\n")
 
 
 class BlueMesh2DPlugin:
@@ -61,8 +74,7 @@ class BlueMesh2DPlugin:
                 from qgis.PyQt.QtCore import QTimer
                 QTimer.singleShot(0, lambda: DepsDialog(parent).exec())
             else:
-                import sys
-                sys.stderr.write("BlueMesh2D: " + msg + "\n")
+                _stderr(msg)
             # Even when the install just succeeded, DO NOT continue in this
             # session: importing freshly installed binary wheels (rasterio,
             # shapely) next to QGIS's own GDAL/GEOS can crash the process.
@@ -82,8 +94,7 @@ class BlueMesh2DPlugin:
                 from qgis.PyQt.QtWidgets import QMessageBox
                 QMessageBox.critical(parent, "BlueMesh2D", msg)
             else:
-                import sys
-                sys.stderr.write("BlueMesh2D: " + msg + "\n")
+                _stderr(msg)
             return
         self.provider = BlueMesh2DProvider()
         QgsApplication.processingRegistry().addProvider(self.provider)
