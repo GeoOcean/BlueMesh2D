@@ -386,6 +386,26 @@ def _venv_python(venv):
 _PYTHON_NAME = re.compile(r"^python(\d+(\.\d+)?)?w?(\.exe)?$", re.IGNORECASE)
 
 
+def _reported_version(python):
+    """``major.minor`` that the interpreter at ``python`` reports, or None.
+
+    None means it could not be run or did not answer (a timeout, an exec
+    error, a non-zero exit such as the macOS bundle's ``python3.x`` aborting
+    with "No module named 'encodings'"): all of them mean "not usable", which
+    is what the caller needs to know, so none is raised. The argv is fixed
+    and ``python`` is a file the caller already matched against
+    :data:`_PYTHON_NAME`.
+    """
+    try:
+        out = subprocess.run(  # nosec B603 -- python-named, fixed argv
+            [python, "-I", "-c",
+             "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True, text=True, timeout=30, **_no_console())
+    except Exception:
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
 def _python_executable():
     """A standalone interpreter of the running Python's version, or None.
 
@@ -416,14 +436,7 @@ def _python_executable():
         if not _PYTHON_NAME.match(os.path.basename(cand)) \
                 or not os.path.isfile(cand):
             continue
-        try:
-            out = subprocess.run(  # nosec B603 -- python-named, fixed argv
-                [cand, "-I", "-c",
-                 "import sys; print('%d.%d' % sys.version_info[:2])"],
-                capture_output=True, text=True, timeout=30, **_no_console())
-        except Exception:
-            continue
-        if out.returncode == 0 and out.stdout.strip() == ver:
+        if _reported_version(cand) == ver:
             return cand
     return None
 
