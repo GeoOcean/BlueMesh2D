@@ -451,6 +451,46 @@ def test_python_executable_rejects_one_that_cannot_run(deps, monkeypatch, tmp_pa
     assert deps._python_executable() is None
 
 
+def test_reported_version_is_none_when_the_probe_cannot_run(deps, monkeypatch):
+    # an exec error or a timeout is "not usable", never an exception, so the
+    # search just moves on to the next candidate
+    def boom(argv, *args, **kwargs):
+        raise OSError("exec format error")
+
+    monkeypatch.setattr(deps.subprocess, "run", boom)
+    assert deps._reported_version("python3") is None
+
+    def hang(argv, *args, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 30)
+
+    monkeypatch.setattr(deps.subprocess, "run", hang)
+    assert deps._reported_version("python3") is None
+
+
+def test_python_executable_moves_on_after_a_candidate_that_raises(
+        deps, monkeypatch, tmp_path):
+    ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    bad, good = tmp_path / "bin" / "python3", tmp_path / "bin" / f"python{ver}"
+    bad.parent.mkdir()
+    bad.write_text("")
+    good.write_text("")
+    monkeypatch.setattr(sys, "executable", str(bad))
+    monkeypatch.setattr(sys, "_base_executable", "", raising=False)
+    monkeypatch.setattr(sys, "base_exec_prefix", str(tmp_path))
+    monkeypatch.setattr(deps.sysconfig, "get_config_var", lambda _n: None)
+    monkeypatch.setattr(deps, "_is_windows", lambda: False)
+
+    probed = []
+
+    def fake_reported(python):
+        probed.append(python)
+        return None if python == str(bad) else ver
+
+    monkeypatch.setattr(deps, "_reported_version", fake_reported)
+    assert deps._python_executable() == str(good)
+    assert probed[0] == str(bad)  # tried first, rejected, then moved on
+
+
 def test_create_venv_gives_up_cleanly_without_an_interpreter(
         deps, monkeypatch, tmp_path):
     venv = tmp_path / "bluemesh2d_deps"
